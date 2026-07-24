@@ -15,7 +15,7 @@ use derive_new::new;
 use holo_utils::bytes::{BytesExt, BytesMutExt};
 use holo_utils::mpls::Label;
 use holo_utils::sr::Sid;
-use num_traits::FromPrimitive;
+use num_traits::{FromPrimitive, ToPrimitive};
 use serde::{Deserialize, Serialize};
 
 use crate::packet::SystemId;
@@ -33,7 +33,7 @@ pub struct AdminGroupStlv(u32);
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[derive(new)]
 #[derive(Deserialize, Serialize)]
-pub struct ExtAdminGroupStlv(Vec<u32>);
+pub struct ExtAdminGroupStlv(Vec<u8>);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[derive(new)]
@@ -241,25 +241,29 @@ impl ExtAdminGroupStlv {
             return Err(TlvDecodeError::InvalidLength(stlv_len));
         }
 
-        let count = stlv_len as usize / 4;
-        let mut groups = Vec::with_capacity(count);
-        for _ in 0..count {
-            groups.push(buf.try_get_u32()?);
-        }
-
-        Ok(ExtAdminGroupStlv(groups))
+        let len = stlv_len as usize;
+        Ok(ExtAdminGroupStlv(buf.copy_to_bytes(len).to_vec()))
     }
 
-    pub(crate) fn encode(&self, buf: &mut BytesMut) {
-        let start_pos =
-            tlv_encode_start(buf, NeighborStlvType::ExtendedAdminGroup);
-        for word in &self.0 {
-            buf.put_u32(*word);
-        }
+    pub(crate) fn encode(
+        &self,
+        tlv_type: impl ToPrimitive,
+        buf: &mut BytesMut,
+    ) {
+        let start_pos = tlv_encode_start(buf, tlv_type);
+        buf.put_slice(&self.0);
+        // Pad to a 4-byte boundary.
+        let pad = (4 - self.0.len() % 4) % 4;
+        buf.put_bytes(0, pad);
         tlv_encode_end(buf, start_pos);
     }
 
-    pub(crate) fn get(&self) -> &[u32] {
+    pub(crate) fn len(&self) -> usize {
+        let padded = (self.0.len() + 3) & !3;
+        TLV_HDR_SIZE + padded
+    }
+
+    pub(crate) fn get(&self) -> &[u8] {
         &self.0
     }
 }
@@ -850,7 +854,7 @@ impl AslaStlvs {
             stlv.encode(buf);
         }
         if let Some(stlv) = &self.ext_admin_group {
-            stlv.encode(buf);
+            stlv.encode(AslaStlvType::ExtendedAdminGroup, buf);
         }
         if let Some(stlv) = &self.max_link_bw {
             stlv.encode(buf);

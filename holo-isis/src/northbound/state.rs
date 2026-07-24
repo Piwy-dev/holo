@@ -18,9 +18,10 @@ use holo_utils::crypto::CryptoAlgo;
 use holo_utils::mac_addr::MacAddr;
 use holo_utils::option::OptionExt;
 use holo_utils::protocol::Protocol;
-use holo_yang::types::{HexStr, TimerValueMillis, TimerValueSecs16, Timeticks};
+use holo_yang::types::{HexStr, HexString, TimerValueMillis, TimerValueSecs16, Timeticks};
 use holo_yang::{ToYang, ToYangFlags};
 use ipnetwork::IpNetwork;
+use num_traits::FromPrimitive;
 
 use crate::adjacency::{Adjacency, AdjacencySid};
 use crate::collections::Lsdb;
@@ -28,7 +29,8 @@ use crate::instance::Instance;
 use crate::interface::Interface;
 use crate::lsdb::{LspEntry, LspLogEntry, LspLogId};
 use crate::northbound::yang_gen::{self, isis};
-use crate::packet::subtlvs::capability::LabelBlockEntry;
+use crate::packet::iana::{IgpAlgoType, IgpMetricType};
+use crate::packet::subtlvs::capability::{FadStlv, FapmStlv, LabelBlockEntry};
 use crate::packet::subtlvs::neighbor::{AdjSidStlv, AslaStlv};
 use crate::packet::subtlvs::prefix::{PrefixAttrFlags, PrefixSidStlv};
 use crate::packet::subtlvs::spb::{IsidEntry, IsidFlags, SpbmSiStlv};
@@ -434,6 +436,102 @@ impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::router_capabili
     }
 }
 
+impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::router_capabilities::router_capability::fad_tlvs::fad_tlv::FadTlv<'a> {
+    type ParentListEntry = &'a RouterCapTlv;
+    type ListEntry = &'a FadStlv;
+
+    fn iter(_instance: &'a Instance, router_cap: &Self::ParentListEntry) -> Option<impl ListIterator<'a, Self::ListEntry>> {
+        let iter = router_cap.sub_tlvs.fad.iter();
+        Some(iter)
+    }
+
+    fn new(_instance: &'a Instance, fad: &Self::ListEntry) -> Self {
+        Self {
+            algo_number: Some(fad.flex_algo),
+            metric_type: IgpMetricType::from_u8(fad.metric_type).map(|t| t.to_yang()),
+            calc_type: IgpAlgoType::from_u8(fad.calc_type).map(|t| t.to_yang()),
+            priority: Some(fad.priority),
+        }
+    }
+}
+
+impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::router_capabilities::router_capability::fad_tlvs::fad_tlv::fa_ex_ag_sub_tlv::FaExAgSubTlv<'a> {
+    type ParentListEntry = &'a FadStlv;
+
+    fn new(_instance: &'a Instance, fad: &Self::ParentListEntry) -> Option<Self> {
+        let stlv = fad.sub_tlvs.exclude_admin_group.as_ref()?;
+        let iter = stlv.get().chunks(4).map(HexStr);
+        Some(Self {
+            extended_admin_group: Some(Box::new(iter)),
+        })
+    }
+}
+
+impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::router_capabilities::router_capability::fad_tlvs::fad_tlv::fa_in_any_ag_sub_tlv::FaInAnyAgSubTlv<'a> {
+    type ParentListEntry = &'a FadStlv;
+
+    fn new(_instance: &'a Instance, fad: &Self::ParentListEntry) -> Option<Self> {
+        let stlv = fad.sub_tlvs.include_any_admin_group.as_ref()?;
+        let iter = stlv.get().chunks(4).map(HexStr);
+        Some(Self {
+            extended_admin_group: Some(Box::new(iter)),
+        })
+    }
+}
+
+impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::router_capabilities::router_capability::fad_tlvs::fad_tlv::fa_in_all_ag_sub_tlv::FaInAllAgSubTlv<'a> {
+    type ParentListEntry = &'a FadStlv;
+
+    fn new(_instance: &'a Instance, fad: &Self::ParentListEntry) -> Option<Self> {
+        let stlv = fad.sub_tlvs.include_all_admin_group.as_ref()?;
+        let iter = stlv.get().chunks(4).map(HexStr);
+        Some(Self {
+            extended_admin_group: Some(Box::new(iter)),
+        })
+    }
+}
+
+impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::router_capabilities::router_capability::fad_tlvs::fad_tlv::fad_flags_sub_tlv::FadFlagsSubTlv<'a> {
+    type ParentListEntry = &'a FadStlv;
+
+    fn new(_instance: &'a Instance, fad: &Self::ParentListEntry) -> Option<Self> {
+        let stlv = fad.sub_tlvs.flags.as_ref()?;
+        Some(Self {
+            fad_flags: stlv.get().to_yang_flags_iter(),
+        })
+    }
+}
+
+impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::router_capabilities::router_capability::fad_tlvs::fad_tlv::fa_ex_srlg_sub_tlv::FaExSrlgSubTlv<'a> {
+    type ParentListEntry = &'a FadStlv;
+
+    fn new(_instance: &'a Instance, fad: &Self::ParentListEntry) -> Option<Self> {
+        let stlv = fad.sub_tlvs.exclude_srlgs.as_ref()?;
+        let iter = stlv.get().iter().copied();
+        Some(Self {
+            srlgs: Some(Box::new(iter)),
+        })
+    }
+}
+
+impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::router_capabilities::router_capability::fad_tlvs::fad_tlv::unknown_tlvs::unknown_tlv::UnknownTlv<'a> {
+    type ParentListEntry = &'a FadStlv;
+    type ListEntry = &'a UnknownTlv;
+
+    fn iter(_instance: &'a Instance, fad: &Self::ParentListEntry) -> Option<impl ListIterator<'a, Self::ListEntry>> {
+        let iter = fad.sub_tlvs.unknown.iter();
+        Some(iter)
+    }
+
+    fn new(_instance: &'a Instance, tlv: &Self::ListEntry) -> Self {
+        Self {
+            r#type: Some(tlv.tlv_type as u16),
+            length: Some(tlv.length as u16),
+            value: Some(HexStr(tlv.value.as_ref())),
+        }
+    }
+}
+
 impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::unknown_tlvs::unknown_tlv::UnknownTlv<'a> {
     type ParentListEntry = &'a LspEntry;
     type ListEntry = &'a UnknownTlv;
@@ -577,7 +675,7 @@ impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::extended_is_nei
             id: *id,
             metric: Some(reach.metric),
             admin_group: reach.sub_tlvs.admin_group.as_ref().map(|tlv| tlv.get()),
-            extended_admin_group: reach.sub_tlvs.ext_admin_group.as_ref().map(|tlv| Box::new(tlv.get().iter().copied()) as _),
+            extended_admin_group: reach.sub_tlvs.ext_admin_group.as_ref().map(|tlv| HexStr(tlv.get())),
             te_metric: reach.sub_tlvs.te_default_metric.as_ref().map(|tlv| tlv.get()),
             max_bandwidth: reach.sub_tlvs.max_link_bw.as_ref().map(|tlv| tlv.get()),
             max_reservable_bandwidth: reach.sub_tlvs.max_resv_link_bw.as_ref().map(|tlv| tlv.get()),
@@ -736,7 +834,7 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::extended_i
     }
 }
 
-impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::extended_is_neighbor::neighbor::instances::instance::asla_sub_tlvs::asla_sub_tlv::AslaSubTlv {
+impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::extended_is_neighbor::neighbor::instances::instance::asla_sub_tlvs::asla_sub_tlv::AslaSubTlv<'a> {
     type ParentListEntry = (u32, &'a IsReach);
     type ListEntry = &'a AslaStlv;
 
@@ -748,10 +846,9 @@ impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::extended_is_nei
     fn new(_provider: &'a Instance, stlv: &Self::ListEntry) -> Self {
         Self {
             l_flag: Some(stlv.l_flag),
-            sabm_length: Some(stlv.sabm_length),
-            udabm_length: Some(stlv.udabm_length),
             te_metric: stlv.sub_tlvs.te_default_metric.as_ref().map(|tlv| tlv.get()),
-            admin_group: stlv.sub_tlvs.admin_group.as_ref().map(|tlv| tlv.get()),
+            admin_group: stlv.sub_tlvs.admin_group.as_ref().map(|tlv| HexString(tlv.get().to_be_bytes().to_vec())),
+            extended_admin_group: stlv.sub_tlvs.ext_admin_group.as_ref().map(|tlv| HexStr(tlv.get())),
             max_bandwidth: stlv.sub_tlvs.max_link_bw.as_ref().map(|tlv| tlv.get()),
             max_reservable_bandwidth: stlv.sub_tlvs.max_resv_link_bw.as_ref().map(|tlv| tlv.get()),
         }
@@ -763,7 +860,7 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::extended_i
 
     fn new(_provider: &'a Instance, stlv: &Self::ParentListEntry) -> Option<Self> {
         Some(Self {
-            sabm_bits: stlv.sabm.to_yang_flags_iter(),
+            sabm_bit: stlv.sabm.to_yang_flags_iter(),
         })
     }
 }
@@ -1175,6 +1272,23 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::extended_i
     }
 }
 
+impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::extended_ipv4_reachability::prefixes::fapm_sub_tlvs::fapm_sub_tlv::FapmSubTlv {
+    type ParentListEntry = &'a Ipv4Reach;
+    type ListEntry = &'a FapmStlv;
+
+    fn iter(_instance: &'a Instance, prefix: &Self::ParentListEntry) -> Option<impl ListIterator<'a, Self::ListEntry>> {
+        let iter = prefix.sub_tlvs.fapm.values();
+        Some(iter)
+    }
+
+    fn new(_instance: &'a Instance, fapm: &Self::ListEntry) -> Self {
+        Self {
+            algo_number: Some(fapm.flex_algo),
+            metric: Some(fapm.metric),
+        }
+    }
+}
+
 impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::mt_is_neighbor::neighbor::Neighbor {
     type ParentListEntry = &'a LspEntry;
     type ListEntry = (u16, LanId, Vec<&'a IsReach>);
@@ -1216,7 +1330,7 @@ impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::mt_is_neighbor:
             id: *id,
             metric: Some(reach.metric),
             admin_group: reach.sub_tlvs.admin_group.as_ref().map(|tlv| tlv.get()),
-            extended_admin_group: reach.sub_tlvs.ext_admin_group.as_ref().map(|tlv| Box::new(tlv.get().iter().copied()) as _),
+            extended_admin_group: reach.sub_tlvs.ext_admin_group.as_ref().map(|tlv| HexStr(tlv.get())),
             te_metric: reach.sub_tlvs.te_default_metric.as_ref().map(|tlv| tlv.get()),
             max_bandwidth: reach.sub_tlvs.max_link_bw.as_ref().map(|tlv| tlv.get()),
             max_reservable_bandwidth: reach.sub_tlvs.max_resv_link_bw.as_ref().map(|tlv| tlv.get()),
@@ -1375,7 +1489,7 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::mt_is_neig
     }
 }
 
-impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::mt_is_neighbor::neighbor::instances::instance::asla_sub_tlvs::asla_sub_tlv::AslaSubTlv {
+impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::mt_is_neighbor::neighbor::instances::instance::asla_sub_tlvs::asla_sub_tlv::AslaSubTlv<'a> {
     type ParentListEntry = (u32, &'a IsReach);
     type ListEntry = &'a AslaStlv;
 
@@ -1387,10 +1501,9 @@ impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::mt_is_neighbor:
     fn new(_provider: &'a Instance, stlv: &Self::ListEntry) -> Self {
         Self {
             l_flag: Some(stlv.l_flag),
-            sabm_length: Some(stlv.sabm_length),
-            udabm_length: Some(stlv.udabm_length),
             te_metric: stlv.sub_tlvs.te_default_metric.as_ref().map(|tlv| tlv.get()),
-            admin_group: stlv.sub_tlvs.admin_group.as_ref().map(|tlv| tlv.get()),
+            admin_group: stlv.sub_tlvs.admin_group.as_ref().map(|tlv| HexString(tlv.get().to_be_bytes().to_vec())),
+            extended_admin_group: stlv.sub_tlvs.ext_admin_group.as_ref().map(|tlv| HexStr(tlv.get())),
             max_bandwidth: stlv.sub_tlvs.max_link_bw.as_ref().map(|tlv| tlv.get()),
             max_reservable_bandwidth: stlv.sub_tlvs.max_resv_link_bw.as_ref().map(|tlv| tlv.get()),
         }
@@ -1402,7 +1515,7 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::mt_is_neig
 
     fn new(_provider: &'a Instance, stlv: &Self::ParentListEntry) -> Option<Self> {
         Some(Self {
-            sabm_bits: stlv.sabm.to_yang_flags_iter(),
+            sabm_bit: stlv.sabm.to_yang_flags_iter(),
         })
     }
 }
@@ -1691,6 +1804,23 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::mt_extende
     }
 }
 
+impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::mt_extended_ipv4_reachability::prefixes::fapm_sub_tlvs::fapm_sub_tlv::FapmSubTlv {
+    type ParentListEntry = (u16, &'a Ipv4Reach);
+    type ListEntry = &'a FapmStlv;
+
+    fn iter(_instance: &'a Instance, (_mt_id, prefix): &Self::ParentListEntry) -> Option<impl ListIterator<'a, Self::ListEntry>> {
+        let iter = prefix.sub_tlvs.fapm.values();
+        Some(iter)
+    }
+
+    fn new(_instance: &'a Instance, fapm: &Self::ListEntry) -> Self {
+        Self {
+            algo_number: Some(fapm.flex_algo),
+            metric: Some(fapm.metric),
+        }
+    }
+}
+
 impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::mt_ipv6_reachability::prefixes::Prefixes {
     type ParentListEntry = &'a LspEntry;
     type ListEntry = (u16, &'a Ipv6Reach);
@@ -1760,6 +1890,23 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::mt_ipv6_re
         Some(Self {
             flag: stlv.flags.to_yang_flags_iter(),
         })
+    }
+}
+
+impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::mt_ipv6_reachability::prefixes::fapm_sub_tlvs::fapm_sub_tlv::FapmSubTlv {
+    type ParentListEntry = (u16, &'a Ipv6Reach);
+    type ListEntry = &'a FapmStlv;
+
+    fn iter(_instance: &'a Instance, (_mt_id, prefix): &Self::ParentListEntry) -> Option<impl ListIterator<'a, Self::ListEntry>> {
+        let iter = prefix.sub_tlvs.fapm.values();
+        Some(iter)
+    }
+
+    fn new(_instance: &'a Instance, fapm: &Self::ListEntry) -> Self {
+        Self {
+            algo_number: Some(fapm.flex_algo),
+            metric: Some(fapm.metric),
+        }
     }
 }
 
@@ -1834,6 +1981,22 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::ipv6_reach
     }
 }
 
+impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::ipv6_reachability::prefixes::fapm_sub_tlvs::fapm_sub_tlv::FapmSubTlv {
+    type ParentListEntry = &'a Ipv6Reach;
+    type ListEntry = &'a FapmStlv;
+
+    fn iter(_instance: &'a Instance, prefix: &Self::ParentListEntry) -> Option<impl ListIterator<'a, Self::ListEntry>> {
+        let iter = prefix.sub_tlvs.fapm.values();
+        Some(iter)
+    }
+
+    fn new(_instance: &'a Instance, fapm: &Self::ListEntry) -> Self {
+        Self {
+            algo_number: Some(fapm.flex_algo),
+            metric: Some(fapm.metric),
+        }
+    }
+}
 impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::purge_originator_identification::PurgeOriginatorIdentification {
     type ParentListEntry = &'a LspEntry;
 

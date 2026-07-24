@@ -43,8 +43,12 @@ static YANG_EMBEDDED_MODULES: Lazy<EmbeddedModules> = Lazy::new(|| {
             include_str!("../modules/ietf/iana-crypt-hash@2014-08-06.yang"),
         EmbeddedModuleKey::new("iana-if-type", Some("2017-01-19"), None, None) =>
             include_str!("../modules/ietf/iana-if-type@2017-01-19.yang"),
+        EmbeddedModuleKey::new("iana-igp-algo-types", Some("2026-03-30"), None, None) =>
+            include_str!("../modules/ietf/iana-igp-algo-types@2026-03-30.yang"),
         EmbeddedModuleKey::new("iana-igp-link-attr-apps", Some("2026-04-14"), None, None) =>
             include_str!("../modules/ietf/iana-igp-link-attr-apps@2026-04-14.yang"),
+        EmbeddedModuleKey::new("iana-igp-metric-types", Some("2026-03-30"), None, None) =>
+            include_str!("../modules/ietf/iana-igp-metric-types@2026-03-30.yang"),
         EmbeddedModuleKey::new("iana-msd-types", Some("2025-01-10"), None, None) =>
             include_str!("../modules/ietf/iana-msd-types@2025-01-10.yang"),
         EmbeddedModuleKey::new("iana-routing-types", Some("2018-10-29"), None, None) =>
@@ -101,8 +105,10 @@ static YANG_EMBEDDED_MODULES: Lazy<EmbeddedModules> = Lazy::new(|| {
             include_str!("../modules/ietf/ietf-ipv6-router-advertisements@2018-03-13.yang"),
         EmbeddedModuleKey::new("ietf-isis", Some("2022-10-19"), None, None) =>
             include_str!("../modules/ietf/ietf-isis@2022-10-19.yang"),
-        EmbeddedModuleKey::new("ietf-isis-link-attr", Some("2026-04-30"), None, None) =>
-            include_str!("../modules/ietf/ietf-isis-link-attr@2026-04-30.yang"),
+        EmbeddedModuleKey::new("ietf-isis-flex-algo", Some("2026-06-26"), None, None) =>
+            include_str!("../modules/ietf/ietf-isis-flex-algo@2026-06-26.yang"),
+        EmbeddedModuleKey::new("ietf-isis-link-attr", Some("2026-06-26"), None, None) =>
+            include_str!("../modules/ietf/ietf-isis-link-attr@2026-06-26.yang"),
         EmbeddedModuleKey::new("ietf-isis-msd", Some("2024-09-02"), None, None) =>
             include_str!("../modules/ietf/ietf-isis-msd@2024-09-02.yang"),
         EmbeddedModuleKey::new("ietf-isis-sr-mpls", Some("2025-12-09"), None, None) =>
@@ -117,6 +123,10 @@ static YANG_EMBEDDED_MODULES: Lazy<EmbeddedModules> = Lazy::new(|| {
             include_str!("../modules/ietf/ietf-mpls-ldp@2022-03-14.yang"),
         EmbeddedModuleKey::new("ietf-netconf-acm", Some("2018-02-14"), None, None) =>
             include_str!("../modules/ietf/ietf-netconf-acm@2018-02-14.yang"),
+        EmbeddedModuleKey::new("ietf-network", Some("2018-02-16"), None, None) =>
+            include_str!("../modules/ietf/ietf-network@2018-02-26.yang"),
+        EmbeddedModuleKey::new("ietf-network-topology", Some("2018-02-26"), None, None) =>
+            include_str!("../modules/ietf/ietf-network-topology@2018-02-26.yang"),
         EmbeddedModuleKey::new("ietf-ospf", Some("2022-10-19"), None, None) =>
             include_str!("../modules/ietf/ietf-ospf@2022-10-19.yang"),
         EmbeddedModuleKey::new("ietf-ospf-anycast-flag", Some("2026-05-19"), None, None) =>
@@ -147,6 +157,8 @@ static YANG_EMBEDDED_MODULES: Lazy<EmbeddedModules> = Lazy::new(|| {
             include_str!("../modules/ietf/ietf-tcp@2022-09-11.yang"),
         EmbeddedModuleKey::new("ietf-tcp-common", Some("2023-04-17"), None, None) =>
             include_str!("../modules/ietf/ietf-tcp-common@2023-04-17.yang"),
+        EmbeddedModuleKey::new("ietf-te-types", Some("2026-06-11"), None, None) =>
+            include_str!("../modules/ietf/ietf-te-types@2026-06-11.yang"),
         EmbeddedModuleKey::new("ietf-vrrp", Some("2018-03-13"), None, None) =>
             include_str!("../modules/ietf/ietf-vrrp@2018-03-13.yang"),
         // IETF Holo augmentations
@@ -189,6 +201,8 @@ static YANG_EMBEDDED_MODULES: Lazy<EmbeddedModules> = Lazy::new(|| {
             include_str!("../modules/deviations/holo-ietf-ip-deviations.yang"),
         EmbeddedModuleKey::new("holo-ietf-isis-deviations", None, None, None) =>
             include_str!("../modules/deviations/holo-ietf-isis-deviations.yang"),
+        EmbeddedModuleKey::new("holo-ietf-isis-flex-algo-deviations", None, None, None) =>
+            include_str!("../modules/deviations/holo-ietf-isis-flex-algo-deviations.yang"),
         EmbeddedModuleKey::new("holo-ietf-isis-link-attr-deviations", None, None, None) =>
             include_str!("../modules/deviations/holo-ietf-isis-link-attr-deviations.yang"),
         EmbeddedModuleKey::new("holo-ietf-isis-msd-deviations", None, None, None) =>
@@ -260,9 +274,12 @@ pub mod implemented_modules {
     ];
     pub const ISIS: &[&str] = &[
         // IETF modules
+        "iana-igp-algo-types",
         "iana-igp-link-attr-apps",
+        "iana-igp-metric-types",
         "ietf-bfd-types",
         "ietf-isis",
+        "ietf-isis-flex-algo",
         "ietf-isis-link-attr",
         "ietf-isis-msd",
         "ietf-isis-sr-mpls",

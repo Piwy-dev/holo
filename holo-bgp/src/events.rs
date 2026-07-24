@@ -4,7 +4,9 @@
 // SPDX-License-Identifier: MIT
 //
 
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
+use std::time::Instant;
 
 use chrono::Utc;
 use holo_protocol::InstanceShared;
@@ -26,8 +28,11 @@ use crate::packet::iana::{Afi, Safi};
 use crate::packet::message::{
     Capability, Message, MpReachNlri, MpUnreachNlri, RouteRefreshMsg, UpdateMsg,
 };
-use crate::policy::RoutePolicyInfo;
-use crate::rib::{AttrSetsCxt, Rib, Route, RouteOrigin, RoutingTable};
+use crate::policy::{POLICY_APPLY_BATCH_SIZE_MAX, RoutePolicyInfo};
+use crate::rib::{
+    AttrSetsCxt, BestRoute, Redistribute, Rib, Route, RouteOrigin,
+    RoutingTable, SelectionState,
+};
 use crate::tasks::messages::output::PolicyApplyMsg;
 use crate::{network, rib};
 
@@ -304,11 +309,13 @@ fn process_nbr_reach_prefixes<A>(
     // Update pre-policy Adj-RIB-In routes.
     let table = A::table(&mut rib.tables);
     let route_attrs = rib.attr_sets.get_route_attr_sets(&attrs);
+    let counters = table.prefix_counters.entry(nbr.index).or_default();
+    let now = Instant::now();
     for prefix in &nlri_prefixes {
         let dest = table.prefixes.entry(*prefix).or_default();
-        let adj_rib = dest.adj_rib.entry(nbr.remote_addr).or_default();
-        let route = Route::new(origin, route_attrs.clone(), route_type);
-        adj_rib.update_in_pre(Box::new(route), &mut rib.attr_sets);
+        let adj_rib = dest.adj_rib.entry(nbr.index).or_default();
+        let route = Route::new(route_attrs.clone(), now);
+        adj_rib.update_in_pre(origin, route_type, route, counters);
     }
 
     // Get policy configuration for the address family.
@@ -325,10 +332,8 @@ fn process_nbr_reach_prefixes<A>(
         policy_type: PolicyType::Import,
         nbr_addr: nbr.remote_addr,
         afi_safi: A::AFI_SAFI,
-        routes: nlri_prefixes
-            .into_iter()
-            .map(|prefix| (prefix.into(), rpinfo.clone()))
-            .collect(),
+        route: rpinfo,
+        prefixes: nlri_prefixes.into_iter().map(Into::into).collect(),
         policies: apply_policy_cfg
             .import_policy
             .iter()
@@ -355,17 +360,17 @@ fn process_nbr_unreach_prefixes<A>(
 
     // Remove routes from Adj-RIB-In.
     let table = A::table(&mut rib.tables);
+    let counters = table.prefix_counters.entry(nbr.index).or_default();
     for prefix in nlri_prefixes {
         let Some(dest) = table.prefixes.get_mut(&prefix) else {
             continue;
         };
-        let Some(adj_rib) = dest.adj_rib.get_mut(&nbr.remote_addr) else {
+        let Some(adj_rib) = dest.adj_rib.get_mut(&nbr.index) else {
             continue;
         };
-
-        adj_rib.remove_in_pre(&mut rib.attr_sets);
-        if let Some(route) = adj_rib.remove_in_post(&mut rib.attr_sets) {
-            rib::nexthop_untrack(&mut table.nht, &prefix, &route, ibus_tx);
+        if let Some(route) = adj_rib.remove_in(counters) {
+            let nexthop = route.nexthop::<A>();
+            rib::nexthop_untrack(&mut table.nht, &prefix, nexthop, ibus_tx);
         }
 
         // Enqueue prefix for the BGP Decision Process.
@@ -444,7 +449,7 @@ pub(crate) fn process_nbr_policy_import<A>(
     instance: &mut InstanceUpView<'_>,
     neighbors: &mut Neighbors,
     nbr_addr: IpAddr,
-    prefixes: Vec<(IpNetwork, PolicyResult<RoutePolicyInfo>)>,
+    routes: Vec<(PolicyResult<RoutePolicyInfo>, Vec<IpNetwork>)>,
 ) -> Result<(), Error>
 where
     A: AddressFamily,
@@ -459,54 +464,62 @@ where
 
     let rib = &mut instance.state.rib;
     let table = A::table(&mut rib.tables);
-    for (prefix, result) in prefixes {
-        // Get RIB destination.
-        let prefix = A::IpNetwork::get(prefix).unwrap();
-        let dest = table.prefixes.entry(prefix).or_default();
-        let adj_rib = dest.adj_rib.entry(nbr.remote_addr).or_default();
-
-        // Update post-policy Adj-RIB-In routes.
-        match result {
+    let ibus_tx = &instance.tx.ibus;
+    let now = Instant::now();
+    for (result, prefixes) in routes {
+        // Intern the attribute sets once for all prefixes sharing the same
+        // policy result.
+        let route_attrs = match &result {
             PolicyResult::Accept(rpinfo) => {
-                let route = Route::new(
-                    rpinfo.origin,
-                    rib.attr_sets.get_route_attr_sets(&rpinfo.attrs),
-                    rpinfo.route_type,
-                );
-
-                // Update nexthop tracking.
-                if let Some(old_route) = adj_rib.in_post() {
-                    rib::nexthop_untrack(
-                        &mut table.nht,
-                        &prefix,
-                        old_route,
-                        &instance.tx.ibus,
-                    );
-                }
-                rib::nexthop_track(
-                    &mut table.nht,
-                    prefix,
-                    &route,
-                    &instance.tx.ibus,
-                );
-
-                adj_rib.update_in_post(Box::new(route), &mut rib.attr_sets);
+                Some(rib.attr_sets.get_route_attr_sets(&rpinfo.attrs))
             }
-            PolicyResult::Reject => {
-                if let Some(route) = adj_rib.remove_in_post(&mut rib.attr_sets)
-                {
-                    rib::nexthop_untrack(
-                        &mut table.nht,
-                        &prefix,
-                        &route,
-                        &instance.tx.ibus,
-                    );
+            PolicyResult::Reject => None,
+        };
+
+        for prefix in prefixes {
+            // Get RIB destination and Adj-RIB entry. If they're gone (e.g. the
+            // route was withdrawn while the policy was being applied), ignore
+            // the result.
+            let prefix = A::IpNetwork::get(prefix).unwrap();
+            let Some(dest) = table.prefixes.get_mut(&prefix) else {
+                continue;
+            };
+            let Some(adj_rib) = dest.adj_rib.get_mut(&nbr.index) else {
+                continue;
+            };
+
+            // Update post-policy Adj-RIB-In routes.
+            let nht = &mut table.nht;
+            match &route_attrs {
+                // The route was accepted by the import policies.
+                Some(route_attrs) => {
+                    let route = Route::new(route_attrs.clone(), now);
+                    let old_nexthop = adj_rib
+                        .in_post()
+                        .map(|(route, _)| route.nexthop::<A>());
+                    let nexthop = route.nexthop::<A>();
+                    if adj_rib.update_in_post(route).is_some() {
+                        rib::nexthop_retrack(
+                            nht,
+                            prefix,
+                            old_nexthop,
+                            nexthop,
+                            ibus_tx,
+                        );
+                    }
+                }
+                // The route was rejected by the import policies.
+                None => {
+                    if let Some(route) = adj_rib.remove_in_post() {
+                        let nexthop = route.nexthop::<A>();
+                        rib::nexthop_untrack(nht, &prefix, nexthop, ibus_tx);
+                    }
                 }
             }
+
+            // Enqueue prefix for the BGP Decision Process.
+            table.queued_prefixes.insert(prefix);
         }
-
-        // Enqueue prefix for the BGP Decision Process.
-        table.queued_prefixes.insert(prefix);
     }
 
     // Schedule the BGP Decision Process.
@@ -521,7 +534,7 @@ pub(crate) fn process_nbr_policy_export<A>(
     instance: &mut InstanceUpView<'_>,
     neighbors: &mut Neighbors,
     nbr_addr: IpAddr,
-    prefixes: Vec<(IpNetwork, PolicyResult<RoutePolicyInfo>)>,
+    routes: Vec<(PolicyResult<RoutePolicyInfo>, Vec<IpNetwork>)>,
 ) -> Result<(), Error>
 where
     A: AddressFamily,
@@ -536,51 +549,77 @@ where
 
     let rib = &mut instance.state.rib;
     let table = A::table(&mut rib.tables);
-    for (prefix, result) in prefixes {
-        // Get RIB destination.
-        let prefix = A::IpNetwork::get(prefix).unwrap();
-        let dest = table.prefixes.entry(prefix).or_default();
-        let adj_rib = dest.adj_rib.entry(nbr.remote_addr).or_default();
-
-        // Update post-policy Adj-RIB-Out routes.
+    let counters = table.prefix_counters.entry(nbr.index).or_default();
+    let now = Instant::now();
+    for (result, prefixes) in routes {
         match result {
             PolicyResult::Accept(rpinfo) => {
-                let route = Route::new(
-                    rpinfo.origin,
-                    rib.attr_sets.get_route_attr_sets(&rpinfo.attrs),
-                    rpinfo.route_type,
-                );
+                // Intern the attribute sets once for all prefixes sharing the
+                // same policy result.
+                let route_attrs =
+                    rib.attr_sets.get_route_attr_sets(&rpinfo.attrs);
 
-                // Check if the Adj-RIB-Out was updated.
-                let update = if let Some(adj_rib_route) = adj_rib.out_post() {
-                    adj_rib_route.attrs != route.attrs
-                } else {
-                    true
-                };
+                // Update route's attributes before transmission.
+                let mut attrs = rpinfo.attrs;
+                rib::attrs_tx_update(&mut attrs, nbr, instance.config.asn);
 
-                if update {
-                    adj_rib
-                        .update_out_post(Box::new(route), &mut rib.attr_sets);
+                let mut advertise = vec![];
+                for prefix in prefixes {
+                    // Get RIB destination and Adj-RIB entry. If they're gone
+                    // (e.g. the route was withdrawn while the policy was being
+                    // applied), ignore the result.
+                    let prefix = A::IpNetwork::get(prefix).unwrap();
+                    let Some(dest) = table.prefixes.get_mut(&prefix) else {
+                        continue;
+                    };
+                    let Some(adj_rib) = dest.adj_rib.get_mut(&nbr.index) else {
+                        continue;
+                    };
 
-                    // Update route's attributes before transmission.
-                    let mut attrs = rpinfo.attrs;
-                    rib::attrs_tx_update::<A>(
-                        &mut attrs,
-                        nbr,
-                        instance.config.asn,
-                        rpinfo.origin.is_local(),
-                    );
+                    // Check if the Adj-RIB-Out was updated.
+                    let route = Route::new(route_attrs.clone(), now);
+                    let update = adj_rib
+                        .out_post()
+                        .is_none_or(|old_route| old_route.attrs != route.attrs);
 
-                    // Update neighbor's Tx queue.
+                    // Update post-policy Adj-RIB-Out routes.
+                    if update
+                        && adj_rib.update_out_post(route, counters).is_some()
+                    {
+                        advertise.push(prefix);
+                    }
+                }
+
+                // Update neighbor's Tx queue.
+                if !advertise.is_empty() {
                     let update_queue = A::update_queue(&mut nbr.update_queues);
-                    update_queue.reach.entry(attrs).or_default().insert(prefix);
+                    update_queue
+                        .reach
+                        .entry(attrs)
+                        .or_default()
+                        .extend(advertise);
                 }
             }
             PolicyResult::Reject => {
-                if adj_rib.remove_out_post(&mut rib.attr_sets).is_some() {
-                    // Update neighbor's Tx queue.
-                    let update_queue = A::update_queue(&mut nbr.update_queues);
-                    update_queue.unreach.insert(prefix);
+                for prefix in prefixes {
+                    // Get RIB destination and Adj-RIB entry. If they're gone
+                    // (e.g. the route was withdrawn while the policy was being
+                    // applied), ignore the result.
+                    let prefix = A::IpNetwork::get(prefix).unwrap();
+                    let Some(dest) = table.prefixes.get_mut(&prefix) else {
+                        continue;
+                    };
+                    let Some(adj_rib) = dest.adj_rib.get_mut(&nbr.index) else {
+                        continue;
+                    };
+
+                    // Update post-policy Adj-RIB-Out routes.
+                    if adj_rib.remove_out_post(counters).is_some() {
+                        // Update neighbor's Tx queue.
+                        let update_queue =
+                            A::update_queue(&mut nbr.update_queues);
+                        update_queue.unreach.insert(prefix);
+                    }
                 }
             }
         }
@@ -616,12 +655,13 @@ where
 
             // Update redistributed route in the RIB.
             let route_attrs = rib.attr_sets.get_route_attr_sets(&rpinfo.attrs);
-            let route = Route::new(
-                rpinfo.origin,
-                route_attrs.clone(),
-                RouteType::Internal,
-            );
-            dest.redistribute = Some(Box::new(route));
+            dest.redistribute = Some(Box::new(Redistribute {
+                origin: rpinfo.origin,
+                route_type: RouteType::Internal,
+                attrs: route_attrs,
+                last_modified: Instant::now(),
+                selection: SelectionState::default(),
+            }));
         }
         PolicyResult::Reject => {
             // Remove redistributed route from the RIB.
@@ -640,7 +680,21 @@ where
 
 // ===== BGP decision process =====
 
-pub(crate) fn decision_process<A>(
+pub(crate) fn decision_process(
+    instance: &mut InstanceUpView<'_>,
+    neighbors: &mut Neighbors,
+) -> Result<(), Error> {
+    // Run the decision process for all address families.
+    decision_process_af::<Ipv4Unicast>(instance, neighbors)?;
+    decision_process_af::<Ipv6Unicast>(instance, neighbors)?;
+
+    // Release interned attribute sets no longer referenced by any route.
+    instance.state.rib.attr_sets.sweep();
+
+    Ok(())
+}
+
+fn decision_process_af<A>(
     instance: &mut InstanceUpView<'_>,
     neighbors: &mut Neighbors,
 ) -> Result<(), Error>
@@ -684,17 +738,42 @@ where
         );
 
         // Update the Loc-RIB with the best path.
-        rib::loc_rib_update::<A>(
+        let old_origin = dest.local.as_ref().map(|local| local.origin);
+        let changed = rib::loc_rib_update::<A>(
             prefix,
             dest,
             best_route.clone(),
-            &mut instance.state.rib.attr_sets,
             selection_cfg,
             mpath_cfg,
             &instance.config.distance,
             &instance.config.trace_opts,
             &instance.tx.ibus,
         );
+
+        // Update the per-peer installed prefix counters if the origin of the
+        // Loc-RIB route has changed.
+        let new_origin = dest.local.as_ref().map(|local| local.origin);
+        if old_origin != new_origin {
+            if let Some(RouteOrigin::Neighbor { remote_addr, .. }) = old_origin
+                && let Some(nbr) = neighbors.get(&remote_addr)
+                && let Some(counters) =
+                    table.prefix_counters.get_mut(&nbr.index)
+            {
+                counters.installed = counters.installed.saturating_sub(1);
+            }
+            if let Some(RouteOrigin::Neighbor { remote_addr, .. }) = new_origin
+                && let Some(nbr) = neighbors.get(&remote_addr)
+            {
+                let counters =
+                    table.prefix_counters.entry(nbr.index).or_default();
+                counters.installed = counters.installed.saturating_add(1);
+            }
+        }
+
+        // Skip route dissemination if the Loc-RIB entry hasn't changed.
+        if !changed {
+            continue;
+        }
 
         // Group best routes and unfeasible routes separately.
         match best_route {
@@ -704,47 +783,47 @@ where
     }
 
     // Phase 3: Route Dissemination.
-    for nbr in neighbors
-        .values_mut()
-        .filter(|nbr| nbr.state == fsm::State::Established)
-    {
-        // Skip neighbors that haven't this address-family enabled.
-        if !nbr.is_af_enabled(A::AFI, A::SAFI) {
-            continue;
-        }
+    if !reach.is_empty() || !unreach.is_empty() {
+        for nbr in neighbors
+            .values_mut()
+            .filter(|nbr| nbr.state == fsm::State::Established)
+        {
+            // Skip neighbors that haven't this address-family enabled.
+            if !nbr.is_af_enabled(A::AFI, A::SAFI) {
+                continue;
+            }
 
-        // Evaluate routes eligible for distribution to this neighbor.
-        //
-        // Any routes that fail to meet the distribution criteria are marked
-        // as unreachable to ensure previous advertisements are withdrawn.
-        let mut nbr_unreach = unreach.clone();
-        let mut nbr_reach = reach.clone();
-        nbr_unreach.extend(
-            nbr_reach
-                .extract_if(.., |(_, route)| !nbr.distribute_filter(route))
-                .map(|(prefix, _)| prefix),
-        );
+            // Evaluate routes eligible for distribution to this neighbor.
+            //
+            // Any routes that fail to meet the distribution criteria are
+            // marked as unreachable to ensure previous advertisements are
+            // withdrawn.
+            let mut nbr_unreach = unreach.clone();
+            let mut nbr_reach = Vec::with_capacity(reach.len());
+            for (prefix, route) in &reach {
+                if nbr.distribute_filter(route) {
+                    nbr_reach.push((*prefix, route.as_ref()));
+                } else {
+                    nbr_unreach.push(*prefix);
+                }
+            }
 
-        // Withdraw unfeasible routes immediately.
-        if !nbr_unreach.is_empty() {
-            withdraw_routes::<A>(
-                nbr,
-                table,
-                &nbr_unreach,
-                &mut instance.state.rib.attr_sets,
-            );
-        }
+            // Withdraw unfeasible routes immediately.
+            if !nbr_unreach.is_empty() {
+                withdraw_routes::<A>(nbr, table, &nbr_unreach);
+            }
 
-        // Advertise best routes.
-        if !nbr_reach.is_empty() {
-            advertise_routes::<A>(
-                nbr,
-                table,
-                nbr_reach,
-                instance.shared,
-                &mut instance.state.rib.attr_sets,
-                &instance.state.policy_apply_tasks,
-            );
+            // Advertise best routes.
+            if !nbr_reach.is_empty() {
+                advertise_routes::<A>(
+                    nbr,
+                    table,
+                    nbr_reach,
+                    &mut instance.state.rib.attr_sets,
+                    instance.shared,
+                    &instance.state.policy_apply_tasks,
+                );
+            }
         }
     }
 
@@ -755,12 +834,7 @@ where
         {
             let dest = entry.get();
             if dest.local.is_none()
-                && dest.adj_rib.values().all(|adj_rib| {
-                    adj_rib.in_pre().is_none()
-                        && adj_rib.in_post().is_none()
-                        && adj_rib.out_pre().is_none()
-                        && adj_rib.out_post().is_none()
-                })
+                && dest.adj_rib.values().all(|adj_rib| adj_rib.is_empty())
             {
                 entry.remove();
             }
@@ -774,19 +848,18 @@ fn withdraw_routes<A>(
     nbr: &mut Neighbor,
     table: &mut RoutingTable<A>,
     routes: &[A::IpNetwork],
-    attr_sets: &mut AttrSetsCxt,
 ) where
     A: AddressFamily,
 {
     // Update Adj-RIB-Out.
+    let counters = table.prefix_counters.entry(nbr.index).or_default();
     for prefix in routes {
         let dest = table.prefixes.get_mut(prefix).unwrap();
-        let Some(adj_rib) = dest.adj_rib.get_mut(&nbr.remote_addr) else {
+        let Some(adj_rib) = dest.adj_rib.get_mut(&nbr.index) else {
             continue;
         };
 
-        adj_rib.remove_out_pre(attr_sets);
-        if adj_rib.remove_out_post(attr_sets).is_some() {
+        if adj_rib.remove_out(counters) {
             let update_queue = A::update_queue(&mut nbr.update_queues);
             update_queue.unreach.insert(*prefix);
         }
@@ -802,20 +875,13 @@ fn withdraw_routes<A>(
 pub(crate) fn advertise_routes<A>(
     nbr: &mut Neighbor,
     table: &mut RoutingTable<A>,
-    routes: Vec<(A::IpNetwork, Box<Route>)>,
-    shared: &InstanceShared,
+    routes: Vec<(A::IpNetwork, &BestRoute)>,
     attr_sets: &mut AttrSetsCxt,
+    shared: &InstanceShared,
     policy_apply_tasks: &PolicyApplyTasks,
 ) where
     A: AddressFamily,
 {
-    // Update pre-policy Adj-RIB-Out routes.
-    for (prefix, route) in &routes {
-        let dest = table.prefixes.get_mut(prefix).unwrap();
-        let adj_rib = dest.adj_rib.entry(nbr.remote_addr).or_default();
-        adj_rib.update_out_pre(route.clone(), attr_sets);
-    }
-
     // Get policy configuration for the address family.
     let apply_policy_cfg = &nbr
         .config
@@ -824,25 +890,67 @@ pub(crate) fn advertise_routes<A>(
         .map(|afi_safi| &afi_safi.apply_policy)
         .unwrap_or(&nbr.config.apply_policy);
 
-    // Enqueue export policy application.
-    let routes = routes
-        .into_iter()
-        .map(|(prefix, route)| (prefix.into(), route.policy_info()))
-        .collect::<Vec<_>>();
-    if !routes.is_empty() {
-        let msg = PolicyApplyMsg::Neighbor {
-            policy_type: PolicyType::Export,
-            nbr_addr: nbr.remote_addr,
-            afi_safi: A::AFI_SAFI,
-            routes,
-            policies: apply_policy_cfg
-                .export_policy
-                .iter()
-                .map(|policy| shared.policies.get(policy).unwrap().clone())
-                .collect(),
-            match_sets: shared.policy_match_sets.clone(),
-            default_policy: apply_policy_cfg.default_export_policy,
-        };
-        policy_apply_tasks.enqueue(msg);
+    // Update pre-policy Adj-RIB-Out routes, grouping prefixes whose routes
+    // share the same origin, type and interned attribute set so a single
+    // route policy info is carried per distinct set.
+    let mut updated_attrs = HashMap::new();
+    let mut groups: BTreeMap<_, (RoutePolicyInfo, Vec<IpNetwork>)> =
+        BTreeMap::new();
+    for (prefix, route) in routes {
+        // Update route's attributes before the export policies are applied.
+        let local = route.origin.is_local();
+        let route_attrs = updated_attrs
+            .entry((route.attrs.key(), local))
+            .or_insert_with(|| {
+                let mut attrs = route.attrs.get();
+                rib::attrs_export_update::<A>(&mut attrs, nbr, local);
+                attr_sets.get_route_attr_sets(&attrs)
+            })
+            .clone();
+
+        // Store the route in the neighbor's pre-policy Adj-RIB-Out.
+        let dest = table.prefixes.get_mut(&prefix).unwrap();
+        let adj_rib = dest.adj_rib.entry(nbr.index).or_default();
+        adj_rib.update_out_pre(Route {
+            attrs: route_attrs.clone(),
+            last_modified: route.last_modified,
+        });
+
+        // Add the prefix to the group matching the route's attribute set.
+        let key = (route.origin, route.route_type, route_attrs.key());
+        let (_, prefixes) = groups.entry(key).or_insert_with(|| {
+            let rpinfo = RoutePolicyInfo::new(
+                route.origin,
+                route.route_type,
+                None,
+                None,
+                route_attrs.get(),
+            );
+            (rpinfo, vec![])
+        });
+        prefixes.push(prefix.into());
+    }
+
+    // Enqueue export policy application, one message per group. Large groups
+    // are split into fixed-size batches so their processing is spread across
+    // all policy tasks.
+    for (route, prefixes) in groups.into_values() {
+        for prefixes in prefixes.chunks(POLICY_APPLY_BATCH_SIZE_MAX) {
+            let msg = PolicyApplyMsg::Neighbor {
+                policy_type: PolicyType::Export,
+                nbr_addr: nbr.remote_addr,
+                afi_safi: A::AFI_SAFI,
+                prefixes: prefixes.to_vec(),
+                route: route.clone(),
+                policies: apply_policy_cfg
+                    .export_policy
+                    .iter()
+                    .map(|policy| shared.policies.get(policy).unwrap().clone())
+                    .collect(),
+                match_sets: shared.policy_match_sets.clone(),
+                default_policy: apply_policy_cfg.default_export_policy,
+            };
+            policy_apply_tasks.enqueue(msg);
+        }
     }
 }

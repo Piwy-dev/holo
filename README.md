@@ -198,6 +198,7 @@ Holo supports the following Internet Standards:
 * RFC 9479 - IS-IS Application-Specific Link Attributes
 * draft-ietf-bier-lsr-non-mpls-extensions-03 - LSR Extensions for BIER non-MPLS Encapsulation
 * draft-ietf-lsr-distoptflood-12 - IS-IS Distributed Flooding Reduction
+* draft-westphal-lsr-isis-database-checksumming-00 - IS-IS Database Fingerprinting
 
 ##### MPLS LDP
 
@@ -269,7 +270,8 @@ Results from conformance testing performed with the Ixia IxANVL RFC Compliance T
 | ietf-ip@2018-02-22 | 52.17% | 0.00% | - | - | [40.00%](https://holo-routing.github.io/ietf-yang-coverage/ietf-ip@2018-02-22.html) |
 | ietf-ipv4-unicast-routing@2018-03-13 | 100.00% | 100.00% | - | - | [100.00%](https://holo-routing.github.io/ietf-yang-coverage/ietf-ipv4-unicast-routing@2018-03-13.html) |
 | ietf-ipv6-unicast-routing@2018-03-13 | 40.62% | 100.00% | - | - | [45.71%](https://holo-routing.github.io/ietf-yang-coverage/ietf-ipv6-unicast-routing@2018-03-13.html) |
-| ietf-isis-link-attr@2026-04-30 | 81.82% | 77.06% | - | - | [77.50%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis-link-attr@2026-04-30.html) |
+| ietf-isis-flex-algo@2026-06-26 | 0.00% | 100.00% | - | 0.00% | [74.00%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis-flex-algo@2026-06-26.html) |
+| ietf-isis-link-attr@2026-06-26 | 81.82% | 78.43% | - | - | [78.76%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis-link-attr@2026-06-26.html) |
 | ietf-isis-msd@2024-09-02 | - | 100.00% | - | - | [100.00%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis-msd@2024-09-02.html) |
 | ietf-isis-sr-mpls@2025-12-09 | 15.38% | 57.27% | - | - | [52.85%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis-sr-mpls@2025-12-09.html) |
 | ietf-isis@2022-10-19 | 93.62% | 80.09% | 100.00% | 100.00% | [86.77%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis@2022-10-19.html) |

@@ -16,7 +16,7 @@ use holo_utils::ip::AddressFamily;
 use holo_utils::policy::PolicyType;
 use holo_utils::protocol::Protocol;
 use holo_utils::socket::TcpListener;
-use holo_utils::task::{Task, TimeoutTask};
+use holo_utils::task::{Task, TimeoutTask, protocol_select};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
@@ -132,8 +132,6 @@ pub struct InstanceUpView<'a> {
 impl Instance {
     // Checks if the instance needs to be started or stopped in response to a
     // northbound or southbound event.
-    //
-    // Note: Router ID updates are ignored if the instance is already active.
     pub(crate) fn update(&mut self) {
         let router_id = self.get_router_id();
 
@@ -141,10 +139,28 @@ impl Instance {
             Ok(()) if !self.is_active() => {
                 self.start(router_id.unwrap());
             }
+            Ok(()) if self.state.as_ref().map(|s| s.router_id) != router_id => {
+                self.router_id_update(router_id.unwrap());
+            }
             Err(reason) if self.is_active() => {
                 self.stop(reason);
             }
             _ => (),
+        }
+    }
+
+    fn router_id_update(&mut self, router_id: Ipv4Addr) {
+        let Some((mut instance, neighbors)) = self.as_up() else {
+            return;
+        };
+
+        instance.state.router_id = router_id;
+
+        let error_code = ErrorCode::Cease;
+        let error_subcode = CeaseSubcode::OtherConfigurationChange;
+        for nbr in neighbors.values_mut() {
+            let msg = NotificationMsg::new(error_code, error_subcode);
+            nbr.fsm_event(&mut instance, fsm::Event::Stop(Some(msg)));
         }
     }
 
@@ -378,12 +394,16 @@ impl InstanceState {
         })
     }
 
-    // Schedules the BGP Decision Process to happen 100 milliseconds
-    // from now, renewing the timeout if called before expiry.
+    // Schedules the BGP Decision Process, coalescing triggering events
+    // that arrive within 100 milliseconds into a single run.
     pub(crate) fn schedule_decision_process(
         &mut self,
         instance_tx: &InstanceChannelsTx<Instance>,
     ) {
+        if self.decision_process_task.is_some() {
+            return;
+        }
+
         let task = tasks::schedule_decision_process(
             &instance_tx.protocol_input.decision_process,
         );
@@ -404,8 +424,7 @@ impl ProtocolInputChannelsTx {
 
 impl MessageReceiver<ProtocolInputMsg> for ProtocolInputChannelsRx {
     async fn recv(&mut self) -> Option<ProtocolInputMsg> {
-        tokio::select! {
-            biased;
+        protocol_select! {
             msg = self.tcp_accept.recv() => {
                 msg.map(ProtocolInputMsg::TcpAccept)
             }
@@ -575,8 +594,8 @@ fn process_protocol_msg(
         },
         // Decision process.
         ProtocolInputMsg::TriggerDecisionProcess(_) => {
-            events::decision_process::<Ipv4Unicast>(instance, neighbors)?;
-            events::decision_process::<Ipv6Unicast>(instance, neighbors)?;
+            instance.state.decision_process_task = None;
+            events::decision_process(instance, neighbors)?;
         }
     }
 

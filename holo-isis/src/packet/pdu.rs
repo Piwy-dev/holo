@@ -198,12 +198,16 @@ pub struct SnpTlvs {
 
 impl Pdu {
     // Decodes IS-IS PDU from a bytes buffer.
+    //
+    // Once the PDU Length field has been validated, the input buffer is
+    // trimmed to that length, stripping any trailing data (e.g. Ethernet
+    // padding).
     pub fn decode(
-        mut buf: Bytes,
+        buf_orig: &mut Bytes,
         hello_auth: Option<&AuthMethod>,
         global_auth: Option<&AuthMethod>,
     ) -> DecodeResult<Self> {
-        let buf_orig = BytesMut::from(buf.clone());
+        let mut buf = buf_orig.clone();
 
         // Decode PDU common header.
         let hdr = Header::decode(&mut buf)?;
@@ -247,7 +251,7 @@ impl Pdu {
 
     // Validates the PDU authentication.
     fn decode_auth_validate(
-        mut buf_orig: BytesMut,
+        buf_orig: &[u8],
         is_lsp: bool,
         auth: &AuthMethod,
         tlv_auth: Option<(AuthenticationTlv, usize)>,
@@ -287,21 +291,16 @@ impl Pdu {
                     return Err(DecodeError::AuthTypeMismatch);
                 }
 
-                // If processing an LSP, zero out the Checksum and Remaining
-                // Lifetime fields.
-                if is_lsp {
-                    buf_orig[Lsp::REM_LIFETIME_RANGE].fill(0);
-                    buf_orig[Lsp::CKSUM_RANGE].fill(0);
-                }
-
-                // Zero out the digest field before computing the new digest.
+                // Compute the expected message digest.
                 let digest_size = auth_key.algo.digest_size() as usize;
                 let digest_offset = tlv_offset + 1;
-                buf_orig[digest_offset..digest_offset + digest_size].fill(0);
-
-                // Compute the expected message digest.
-                let digest = auth::message_digest(
-                    &buf_orig,
+                const ZEROS: [u8; CryptoAlgo::MAX_DIGEST_SIZE] =
+                    [0u8; CryptoAlgo::MAX_DIGEST_SIZE];
+                let digest = Self::auth_compute_digest(
+                    buf_orig,
+                    is_lsp,
+                    digest_offset,
+                    &ZEROS[..digest_size],
                     auth_key.algo,
                     &auth_key.string,
                 );
@@ -342,21 +341,13 @@ impl Pdu {
                     return Err(DecodeError::AuthError);
                 }
 
-                // If processing an LSP, zero out the Checksum and Remaining
-                // Lifetime fields.
-                if is_lsp {
-                    buf_orig[Lsp::REM_LIFETIME_RANGE].fill(0);
-                    buf_orig[Lsp::CKSUM_RANGE].fill(0);
-                }
-
-                // Initialize the digest field with Apad (0x878FE1F3...).
-                let digest_offset = tlv_offset + 3;
-                buf_orig[digest_offset..digest_offset + digest_size]
-                    .copy_from_slice(&HMAC_APAD[..digest_size]);
-
                 // Compute the expected message digest.
-                let digest = auth::message_digest(
-                    &buf_orig,
+                let digest_offset = tlv_offset + 3;
+                let digest = Self::auth_compute_digest(
+                    buf_orig,
+                    is_lsp,
+                    digest_offset,
+                    &HMAC_APAD[..digest_size],
                     auth_key.algo,
                     &auth_key.string,
                 );
@@ -369,6 +360,41 @@ impl Pdu {
         }
 
         Ok(tlv_auth.0)
+    }
+
+    // Computes an authentication digest over the PDU buffer. The buffer is
+    // split into segments that substitute the digest field with the provided
+    // replacement: zeros for RFC 5304 (HMAC-MD5) or Apad for RFC 5310 (generic
+    // cryptographic auth). For LSPs, the Remaining Lifetime and Checksum
+    // fields are also replaced with zeros.
+    fn auth_compute_digest(
+        buf: &[u8],
+        is_lsp: bool,
+        digest_offset: usize,
+        digest_replacement: &[u8],
+        algo: CryptoAlgo,
+        key: &[u8],
+    ) -> Vec<u8> {
+        let digest_end = digest_offset + digest_replacement.len();
+        if is_lsp {
+            let segments = [
+                &buf[..Lsp::REM_LIFETIME_RANGE.start],
+                &[0, 0],
+                &buf[Lsp::REM_LIFETIME_RANGE.end..Lsp::CKSUM_RANGE.start],
+                &[0, 0],
+                &buf[Lsp::CKSUM_RANGE.end..digest_offset],
+                digest_replacement,
+                &buf[digest_end..],
+            ];
+            auth::message_digest(&segments, algo, key)
+        } else {
+            let segments = [
+                &buf[..digest_offset],
+                digest_replacement,
+                &buf[digest_end..],
+            ];
+            auth::message_digest(&segments, algo, key)
+        }
     }
 
     // Returns an Authentication TLV for encoding a PDU with the given key.
@@ -565,7 +591,7 @@ impl Hello {
     fn decode(
         hdr: Header,
         buf: &mut Bytes,
-        buf_orig: BytesMut,
+        buf_orig: &mut Bytes,
         auth: Option<&AuthMethod>,
     ) -> DecodeResult<Self> {
         // Parse circuit type.
@@ -589,7 +615,7 @@ impl Hello {
         }
 
         // Parse PDU length.
-        let _pdu_len = decode_pdu_length(&hdr, buf, &buf_orig)?;
+        let _pdu_len = decode_pdu_length(&hdr, buf, buf_orig)?;
 
         // Parse custom fields.
         let variant = if hdr.pdu_type == PduType::HelloP2P {
@@ -963,11 +989,11 @@ impl Lsp {
     fn decode(
         hdr: Header,
         buf: &mut Bytes,
-        buf_orig: BytesMut,
+        buf_orig: &mut Bytes,
         auth: Option<&AuthMethod>,
     ) -> DecodeResult<Self> {
         // Parse PDU length.
-        let pdu_len = decode_pdu_length(&hdr, buf, &buf_orig)?;
+        let pdu_len = decode_pdu_length(&hdr, buf, buf_orig)?;
 
         // Parse remaining lifetime.
         let rem_lifetime = buf.try_get_u16()?;
@@ -1846,11 +1872,11 @@ impl Snp {
     fn decode(
         hdr: Header,
         buf: &mut Bytes,
-        buf_orig: BytesMut,
+        buf_orig: &mut Bytes,
         auth: Option<&AuthMethod>,
     ) -> DecodeResult<Self> {
         // Parse PDU length.
-        let _pdu_len = decode_pdu_length(&hdr, buf, &buf_orig)?;
+        let _pdu_len = decode_pdu_length(&hdr, buf, buf_orig)?;
 
         // Parse source ID.
         let source = LanId::decode(buf)?;
@@ -2054,7 +2080,7 @@ fn lsp_base_time() -> Option<Instant> {
 fn decode_pdu_length(
     hdr: &Header,
     buf: &mut Bytes,
-    buf_orig: &BytesMut,
+    buf_orig: &mut Bytes,
 ) -> DecodeResult<u16> {
     let pdu_len = buf.try_get_u16()?;
 
@@ -2070,6 +2096,7 @@ fn decode_pdu_length(
     if pdu_len < buf_orig.len() as u16 {
         let eth_padding = buf_orig.len() - pdu_len as usize;
         buf.truncate(buf.len() - eth_padding);
+        buf_orig.truncate(pdu_len as usize);
     }
 
     Ok(pdu_len)
@@ -2100,7 +2127,7 @@ fn pdu_encode_end(
         && auth_key.algo != CryptoAlgo::ClearText
     {
         let digest =
-            auth::message_digest(&buf, auth_key.algo, &auth_key.string);
+            auth::message_digest(&[&buf], auth_key.algo, &auth_key.string);
         let mut offset = auth_tlv_pos + 3;
         if auth_key.algo != CryptoAlgo::HmacMd5 {
             offset += 2;

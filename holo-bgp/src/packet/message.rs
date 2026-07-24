@@ -392,9 +392,10 @@ impl Message {
         }
 
         // Ensure the buffer is big enough to hold the entire message.
-        let mut buf = Bytes::copy_from_slice(&data[0..Self::MIN_LEN as usize]);
-        let _marker = buf.get_u128();
-        let msg_len = buf.get_u16();
+        let msg_len = u16::from_be_bytes([
+            data[Self::MSG_LEN_POS.start],
+            data[Self::MSG_LEN_POS.end - 1],
+        ]);
         if msg_len < Self::MIN_LEN || msg_len as usize > buf_size {
             return None;
         }
@@ -1040,16 +1041,15 @@ pub fn decode_ipv4_prefix(
     buf.try_copy_to_slice(&mut prefix_bytes[..plen_wire])?;
     let prefix = Ipv4Addr::from(prefix_bytes);
     let prefix = Ipv4Network::new(prefix, plen)
-        .map(|prefix| prefix.apply_mask())
         .map_err(|_| UpdateMessageError::InvalidNetworkField)?;
+
+    // Normalize prefix.
+    let prefix = prefix.apply_mask();
 
     // Ignore semantically incorrect prefix.
     if !prefix.is_routable() {
         return Ok(None);
     }
-
-    // Normalize prefix.
-    let prefix = prefix.apply_mask();
 
     Ok(Some(prefix))
 }
@@ -1069,16 +1069,15 @@ pub fn decode_ipv6_prefix(
     buf.try_copy_to_slice(&mut prefix_bytes[..plen_wire])?;
     let prefix = Ipv6Addr::from(prefix_bytes);
     let prefix = Ipv6Network::new(prefix, plen)
-        .map(|prefix| prefix.apply_mask())
         .map_err(|_| UpdateMessageError::InvalidNetworkField)?;
+
+    // Normalize prefix.
+    let prefix = prefix.apply_mask();
 
     // Ignore semantically incorrect prefix.
     if !prefix.is_routable() {
         return Ok(None);
     }
-
-    // Normalize prefix.
-    let prefix = prefix.apply_mask();
 
     Ok(Some(prefix))
 }

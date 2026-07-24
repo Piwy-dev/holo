@@ -29,7 +29,7 @@ use crate::{ibus, netlink};
 
 #[derive(Debug)]
 pub struct Rib {
-    pub ip: JointPrefixMap<IpNetwork, BTreeMap<u32, Route>>,
+    pub ip: JointPrefixMap<IpNetwork, Vec<Route>>,
     pub mpls: BTreeMap<Label, Route>,
     pub nht: HashMap<IpAddr, NhtEntry>,
     pub ip_update_queue: BTreeSet<IpNetwork>,
@@ -47,7 +47,7 @@ pub struct Route {
     pub metric: u32,
     pub tag: Option<u32>,
     pub opaque_attrs: RouteOpaqueAttrs,
-    pub nexthops: BTreeSet<Nexthop>,
+    pub nexthops: Box<[Nexthop]>,
     pub last_updated: DateTime<Utc>,
     pub flags: RouteFlags,
 }
@@ -89,42 +89,43 @@ impl Rib {
     }
 
     // Adds IP route to the RIB.
-    pub(crate) fn ip_route_add(
-        &mut self,
-        mut msg: RouteMsg,
-        owner: IbusClientId,
-    ) {
-        msg.nexthops = self.resolve_nexthops(msg.nexthops);
+    pub(crate) fn ip_route_add(&mut self, msg: RouteMsg, owner: IbusClientId) {
+        let nexthops = self.resolve_nexthops(msg.nexthops);
         let rib_prefix = self.prefix_entry(msg.prefix);
-        match rib_prefix.entry(msg.distance) {
-            btree_map::Entry::Vacant(v) => {
-                // If the IP route does not exist, create a new entry.
-                v.insert(Route::new(
-                    msg.protocol,
-                    owner,
-                    msg.kind,
-                    msg.distance,
-                    msg.metric,
-                    msg.tag,
-                    msg.opaque_attrs,
-                    msg.nexthops,
-                    Utc::now(),
-                    RouteFlags::empty(),
-                ));
-            }
-            btree_map::Entry::Occupied(o) => {
-                let route = o.into_mut();
-
+        match rib_prefix
+            .binary_search_by_key(&msg.distance, |route| route.distance)
+        {
+            Ok(idx) => {
                 // Update the existing IP route with the new information.
+                let route = &mut rib_prefix[idx];
                 route.owner = owner;
                 route.kind = msg.kind;
                 route.distance = msg.distance;
                 route.metric = msg.metric;
                 route.tag = msg.tag;
                 route.opaque_attrs = msg.opaque_attrs;
-                route.nexthops = msg.nexthops;
+                route.nexthops = nexthops;
                 route.last_updated = Utc::now();
                 route.flags.remove(RouteFlags::REMOVED);
+            }
+            Err(idx) => {
+                // If the IP route does not exist, create a new entry,
+                // keeping the list sorted by distance.
+                rib_prefix.insert(
+                    idx,
+                    Route::new(
+                        msg.protocol,
+                        owner,
+                        msg.kind,
+                        msg.distance,
+                        msg.metric,
+                        msg.tag,
+                        msg.opaque_attrs,
+                        nexthops,
+                        Utc::now(),
+                        RouteFlags::empty(),
+                    ),
+                );
             }
         }
 
@@ -138,7 +139,7 @@ impl Rib {
 
         // Find IP route entry from the same advertising protocol.
         if let Some(route) = rib_prefix
-            .values_mut()
+            .iter_mut()
             .find(|route| route.protocol == msg.protocol)
         {
             // Mark IP route as removed.
@@ -152,10 +153,10 @@ impl Rib {
     // Adds MPLS route to the RIB.
     pub(crate) fn mpls_route_add(
         &mut self,
-        mut msg: LabelInstallMsg,
+        msg: LabelInstallMsg,
         owner: IbusClientId,
     ) {
-        msg.nexthops = self.resolve_nexthops(msg.nexthops);
+        let nexthops = self.resolve_nexthops(msg.nexthops);
         match self.mpls.entry(msg.label) {
             btree_map::Entry::Vacant(v) => {
                 // If the MPLS route does not exist, create a new entry.
@@ -167,7 +168,7 @@ impl Rib {
                     0,
                     None,
                     RouteOpaqueAttrs::None,
-                    msg.nexthops.clone(),
+                    nexthops.clone(),
                     Utc::now(),
                     RouteFlags::empty(),
                 ));
@@ -179,9 +180,9 @@ impl Rib {
                 route.owner = owner;
                 route.protocol = msg.protocol;
                 if msg.replace {
-                    route.replace_nexthops(&msg.nexthops);
+                    route.replace_nexthops(&nexthops);
                 } else {
-                    route.merge_nexthops(&msg.nexthops);
+                    route.merge_nexthops(&nexthops);
                 }
                 route.last_updated = Utc::now();
                 route.flags.remove(RouteFlags::REMOVED);
@@ -195,14 +196,14 @@ impl Rib {
         if let Some((protocol, prefix)) = msg.route {
             let rib_prefix = self.prefix_entry(prefix);
             if let Some(route) = rib_prefix
-                .values_mut()
+                .iter_mut()
                 .find(|route| route.protocol == protocol)
             {
                 // Update route's nexthop labels.
                 if msg.replace {
-                    route.replace_nexthops_labels(&msg.nexthops);
+                    route.replace_nexthops_labels(&nexthops);
                 } else {
-                    route.merge_nexthops_labels(&msg.nexthops);
+                    route.merge_nexthops_labels(&nexthops);
                 }
 
                 // Add IP route to the update queue.
@@ -234,7 +235,7 @@ impl Rib {
             if let Some((protocol, prefix)) = msg.route {
                 let rib_prefix = self.prefix_entry(prefix);
                 if let Some(route) = rib_prefix
-                    .values_mut()
+                    .iter_mut()
                     .find(|route| route.protocol == protocol)
                 {
                     // Remove route's nexthop labels.
@@ -246,14 +247,11 @@ impl Rib {
             }
         } else {
             // Remove nexthops from the MPLS route.
-            let mut route_nhs =
-                route.nexthops.clone().into_iter().collect::<Vec<_>>();
-            for route_nh in route_nhs.iter_mut() {
+            for route_nh in route.nexthops.iter_mut() {
                 if msg.nexthops.iter().any(|msg_nh| route_nh.matches(msg_nh)) {
                     route_nh.remove_labels();
                 }
             }
-            route.nexthops = route_nhs.into_iter().collect();
 
             // Add MPLS route to the update queue.
             self.mpls_update_queue_add(msg.label);
@@ -262,13 +260,11 @@ impl Rib {
             if let Some((protocol, prefix)) = msg.route {
                 let rib_prefix = self.prefix_entry(prefix);
                 if let Some(route) = rib_prefix
-                    .values_mut()
+                    .iter_mut()
                     .find(|route| route.protocol == protocol)
                 {
                     // Remove nexthop labels from the IP route.
-                    let mut route_nhs =
-                        route.nexthops.clone().into_iter().collect::<Vec<_>>();
-                    for route_nh in route_nhs.iter_mut() {
+                    for route_nh in route.nexthops.iter_mut() {
                         if msg
                             .nexthops
                             .iter()
@@ -277,7 +273,6 @@ impl Rib {
                             route_nh.remove_labels();
                         }
                     }
-                    route.nexthops = route_nhs.into_iter().collect();
                 }
 
                 // Add IP route to the update queue.
@@ -326,16 +321,16 @@ impl Rib {
 
             // Find the protocol of the old best route, if one exists.
             let old_best_protocol = rib_prefix
-                .values()
+                .iter()
                 .find(|route| route.flags.contains(RouteFlags::ACTIVE))
                 .map(|route| route.protocol);
 
             // Remove routes marked with the REMOVED flag.
             rib_prefix
-                .retain(|_, route| !route.flags.contains(RouteFlags::REMOVED));
+                .retain(|route| !route.flags.contains(RouteFlags::REMOVED));
 
             // Select and (re)install the best route for this prefix.
-            for (idx, route) in rib_prefix.values_mut().enumerate() {
+            for (idx, route) in rib_prefix.iter_mut().enumerate() {
                 if idx == 0 {
                     // Mark the route as the preferred one.
                     route.flags.insert(RouteFlags::ACTIVE);
@@ -419,15 +414,16 @@ impl Rib {
     }
 
     // Returns RIB entry associated to the given IP prefix.
-    fn prefix_entry(&mut self, prefix: IpNetwork) -> &mut BTreeMap<u32, Route> {
+    //
+    // The returned list of routes is sorted by administrative distance.
+    fn prefix_entry(&mut self, prefix: IpNetwork) -> &mut Vec<Route> {
         self.ip.entry(prefix).or_default()
     }
 
     // Returns the longest matching route for the given IP address.
     fn prefix_longest_match(&self, addr: &IpAddr) -> Option<&Route> {
         let (_, lpm) = self.ip.get_lpm(&addr.to_host_prefix())?;
-        lpm.values()
-            .next()
+        lpm.first()
             .filter(|route| route.flags.contains(RouteFlags::ACTIVE))
             .filter(|route| !route.flags.contains(RouteFlags::REMOVED))
     }
@@ -437,10 +433,7 @@ impl Rib {
     // Note that only one level of recursion is resolved. If the resolved
     // next-hops contain recursive next-hops themselves, those will not be
     // resolved further.
-    fn resolve_nexthops(
-        &self,
-        nexthops: BTreeSet<Nexthop>,
-    ) -> BTreeSet<Nexthop> {
+    fn resolve_nexthops(&self, nexthops: Vec<Nexthop>) -> Box<[Nexthop]> {
         nexthops
             .into_iter()
             .map(|mut nexthop| {
@@ -491,7 +484,7 @@ impl Rib {
     // Removes all IP and MPLS routes installed by the given client.
     pub(crate) fn route_remove_all_by_owner(&mut self, owner: IbusClientId) {
         for (prefix, rib_prefix) in self.ip.iter_mut() {
-            for route in rib_prefix.values_mut() {
+            for route in rib_prefix.iter_mut() {
                 if route.owner == owner {
                     route.flags.insert(RouteFlags::REMOVED);
                     self.ip_update_queue.insert(prefix);
@@ -514,7 +507,7 @@ impl Rib {
     ) {
         for (prefix, rib_prefix) in &self.ip {
             if let Some(route) = rib_prefix
-                .values()
+                .iter()
                 .find(|route| route.flags.contains(RouteFlags::ACTIVE))
             {
                 netlink::ip_route_uninstall(
@@ -537,8 +530,8 @@ impl Route {
     //
     // If a matching nexthop is found, its labels are copied. Otherwise, the
     // nexthop is added.
-    fn merge_nexthops(&mut self, other_nhs: &BTreeSet<Nexthop>) {
-        let mut nhs = self.nexthops.clone().into_iter().collect::<Vec<_>>();
+    fn merge_nexthops(&mut self, other_nhs: &[Nexthop]) {
+        let mut nhs = std::mem::take(&mut self.nexthops).into_vec();
         for other_nh in other_nhs.iter() {
             if let Some(nh) =
                 nhs.iter_mut().find(|nh| nh.matches_no_labels(other_nh))
@@ -548,16 +541,15 @@ impl Route {
                 nhs.push(other_nh.clone());
             }
         }
-        self.nexthops = nhs.into_iter().collect();
+        self.nexthops = nhs.into();
     }
 
     // Merges the provided nexthop labels from another set into this route.
     //
     // If a matching nexthop is found, its labels are copied. Otherwise, the
     // nexthop is ignored.
-    fn merge_nexthops_labels(&mut self, other_nhs: &BTreeSet<Nexthop>) {
-        let mut nhs = self.nexthops.clone().into_iter().collect::<Vec<_>>();
-        for nh in nhs.iter_mut() {
+    fn merge_nexthops_labels(&mut self, other_nhs: &[Nexthop]) {
+        for nh in self.nexthops.iter_mut() {
             if let Some(other_nh) = other_nhs
                 .iter()
                 .find(|other_nh| nh.matches_no_labels(other_nh))
@@ -565,21 +557,19 @@ impl Route {
                 nh.copy_labels(other_nh);
             }
         }
-        self.nexthops = nhs.into_iter().collect();
     }
 
     // Replaces the nexthops in this route with the provided set of nexthops.
-    fn replace_nexthops(&mut self, other_nhs: &BTreeSet<Nexthop>) {
-        self.nexthops.clone_from(other_nhs);
+    fn replace_nexthops(&mut self, other_nhs: &[Nexthop]) {
+        self.nexthops = other_nhs.into();
     }
 
     // Replaces the provided next hop labels from another set into this route.
     //
     // It matches and copies labels for existing nexthops and removes labels
     // for unmatched nexthops.
-    fn replace_nexthops_labels(&mut self, other_nhs: &BTreeSet<Nexthop>) {
-        let mut nhs = self.nexthops.clone().into_iter().collect::<Vec<_>>();
-        for nh in nhs.iter_mut() {
+    fn replace_nexthops_labels(&mut self, other_nhs: &[Nexthop]) {
+        for nh in self.nexthops.iter_mut() {
             if let Some(other_nh) = other_nhs
                 .iter()
                 .find(|other_nh| nh.matches_no_labels(other_nh))
@@ -589,15 +579,12 @@ impl Route {
                 nh.remove_labels();
             }
         }
-        self.nexthops = nhs.into_iter().collect();
     }
 
     // Removes labels from all nexthops of the route.
     fn remove_nexthops_labels(&mut self) {
-        let mut nhs = self.nexthops.clone().into_iter().collect::<Vec<_>>();
-        for nh in nhs.iter_mut() {
+        for nh in self.nexthops.iter_mut() {
             nh.remove_labels();
         }
-        self.nexthops = nhs.into_iter().collect();
     }
 }

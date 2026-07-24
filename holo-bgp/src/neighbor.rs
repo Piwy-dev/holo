@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: MIT
 //
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::sync::atomic::{self, AtomicU32};
@@ -36,7 +36,7 @@ use crate::packet::message::{
     Capability, DecodeCxt, EncodeCxt, KeepaliveMsg, Message,
     NegotiatedCapability, NotificationMsg, OpenMsg, RouteRefreshMsg,
 };
-use crate::rib::{Rib, Route, RouteOrigin};
+use crate::rib::{BestRoute, Rib, RouteOrigin};
 #[cfg(feature = "testing")]
 use crate::tasks::messages::ProtocolOutputMsg;
 use crate::tasks::messages::input::{NbrTimerMsg, TcpConnectMsg};
@@ -49,6 +49,7 @@ const LARGE_HOLDTIME: u16 = 240;
 // BGP neighbor.
 #[derive(Debug)]
 pub struct Neighbor {
+    pub index: PeerIndex,
     pub remote_addr: IpAddr,
     pub config: NeighborCfg,
     pub state: fsm::State,
@@ -122,8 +123,69 @@ pub struct NeighborUpdateQueue<A: AddressFamily> {
     pub unreach: BTreeSet<A::IpNetwork>,
 }
 
-// Type aliases.
-pub type Neighbors = BTreeMap<IpAddr, Neighbor>;
+// Collection of BGP neighbors.
+#[derive(Debug, Default)]
+pub struct Neighbors {
+    // Neighbor binary tree keyed by remote address (1:1).
+    addr_tree: BTreeMap<IpAddr, Neighbor>,
+    // Next available peer index.
+    next_index: u32,
+}
+
+// Identifier assigned to a neighbor, used to key the Adj-RIB tables.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub struct PeerIndex(u32);
+
+// ===== impl Neighbors =====
+
+impl Neighbors {
+    // Creates and inserts a neighbor, assigning it a fresh peer index.
+    pub(crate) fn insert(&mut self, addr: IpAddr, peer_type: PeerType) {
+        let index = self.next_index();
+        let nbr = Neighbor::new(index, addr, peer_type);
+        self.addr_tree.insert(addr, nbr);
+    }
+
+    // Removes the neighbor corresponding to the given remote address.
+    pub(crate) fn remove(&mut self, addr: &IpAddr) -> Option<Neighbor> {
+        self.addr_tree.remove(addr)
+    }
+
+    // Returns a reference to the neighbor corresponding to the given remote
+    // address.
+    pub(crate) fn get(&self, addr: &IpAddr) -> Option<&Neighbor> {
+        self.addr_tree.get(addr)
+    }
+
+    // Returns a mutable reference to the neighbor corresponding to the given
+    // remote address.
+    pub(crate) fn get_mut(&mut self, addr: &IpAddr) -> Option<&mut Neighbor> {
+        self.addr_tree.get_mut(addr)
+    }
+
+    // Returns an iterator visiting all neighbors.
+    //
+    // Neighbors are ordered by their remote addresses.
+    pub(crate) fn values(&self) -> impl Iterator<Item = &'_ Neighbor> + '_ {
+        self.addr_tree.values()
+    }
+
+    // Returns an iterator visiting all neighbors with mutable references.
+    //
+    // Neighbors are ordered by their remote addresses.
+    pub(crate) fn values_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &'_ mut Neighbor> + '_ {
+        self.addr_tree.values_mut()
+    }
+
+    // Get next peer index.
+    fn next_index(&mut self) -> PeerIndex {
+        let index = PeerIndex(self.next_index);
+        self.next_index = self.next_index.wrapping_add(1);
+        index
+    }
+}
 
 // Finite State Machine.
 pub mod fsm {
@@ -194,8 +256,13 @@ pub mod fsm {
 
 impl Neighbor {
     // Creates a new neighbor in the Idle state with default configuration.
-    pub(crate) fn new(remote_addr: IpAddr, peer_type: PeerType) -> Neighbor {
+    fn new(
+        index: PeerIndex,
+        remote_addr: IpAddr,
+        peer_type: PeerType,
+    ) -> Neighbor {
         Neighbor {
+            index,
             remote_addr,
             config: Default::default(),
             state: fsm::State::Idle,
@@ -913,16 +980,14 @@ impl Neighbor {
             .iter()
             .filter_map(|(prefix, dest)| {
                 dest.local.as_ref().map(|route| {
-                    let route = Route {
+                    let route = BestRoute {
                         origin: route.origin,
-                        attrs: route.attrs.clone(),
                         route_type: route.route_type,
-                        igp_cost: None,
+                        attrs: route.attrs.clone(),
                         last_modified: route.last_modified,
-                        ineligible_reason: None,
-                        reject_reason: None,
+                        igp_cost: None,
                     };
-                    (prefix, Box::new(route))
+                    (prefix, route)
                 })
             })
             .filter(|(_, route)| self.distribute_filter(route))
@@ -932,9 +997,12 @@ impl Neighbor {
         events::advertise_routes::<A>(
             self,
             table,
-            routes,
-            instance.shared,
+            routes
+                .iter()
+                .map(|(prefix, route)| (*prefix, route))
+                .collect(),
             &mut instance.state.rib.attr_sets,
+            instance.shared,
             &instance.state.policy_apply_tasks,
         );
     }
@@ -947,26 +1015,37 @@ impl Neighbor {
         A: AddressFamily,
     {
         let table = A::table(&mut instance.state.rib.tables);
+
+        // Group prefixes whose routes share the same interned attribute set,
+        // updating the route's attributes once per distinct set.
+        let mut groups: HashMap<_, (Attrs, Vec<_>)> = HashMap::new();
         for (prefix, dest) in &table.prefixes {
-            let Some(adj_rib) = dest.adj_rib.get(&self.remote_addr) else {
-                continue;
-            };
-            let Some(route) = adj_rib.out_post() else {
+            let Some(route) = dest
+                .adj_rib
+                .get(&self.index)
+                .and_then(|adj_rib| adj_rib.out_post())
+            else {
                 continue;
             };
 
             // Update route's attributes before transmission.
-            let mut attrs = route.attrs.get();
-            rib::attrs_tx_update::<A>(
-                &mut attrs,
-                self,
-                instance.config.asn,
-                route.origin.is_local(),
-            );
+            let (_, prefixes) =
+                groups.entry(route.attrs.key()).or_insert_with(|| {
+                    let mut attrs = route.attrs.get();
+                    rib::attrs_tx_update(&mut attrs, self, instance.config.asn);
+                    (attrs, vec![])
+                });
+            prefixes.push(prefix);
+        }
 
-            // Update neighbor's Tx queue.
-            let update_queue = A::update_queue(&mut self.update_queues);
-            update_queue.reach.entry(attrs).or_default().insert(prefix);
+        // Update neighbor's Tx queue.
+        let update_queue = A::update_queue(&mut self.update_queues);
+        for (attrs, prefixes) in groups.into_values() {
+            update_queue
+                .reach
+                .entry(attrs)
+                .or_default()
+                .extend(prefixes);
         }
     }
 
@@ -976,28 +1055,23 @@ impl Neighbor {
         A: AddressFamily,
     {
         let table = A::table(&mut rib.tables);
+        let nht = &mut table.nht;
         for (prefix, dest) in table.prefixes.iter_mut() {
             // Clear the Adj-RIB-In and Adj-RIB-Out.
-            if let Some(mut adj_rib) = dest.adj_rib.remove(&self.remote_addr) {
+            if let Some(adj_rib) = dest.adj_rib.remove(&self.index) {
                 // Update nexthop tracking.
-                if let Some(adj_in_route) = adj_rib.in_post() {
-                    rib::nexthop_untrack(
-                        &mut table.nht,
-                        &prefix,
-                        adj_in_route,
-                        ibus_tx,
-                    );
+                if let Some((route, _)) = adj_rib.in_post() {
+                    let nexthop = route.nexthop::<A>();
+                    rib::nexthop_untrack(nht, &prefix, nexthop, ibus_tx);
                 }
 
-                adj_rib.remove_in_pre(&mut rib.attr_sets);
-                adj_rib.remove_in_post(&mut rib.attr_sets);
-                adj_rib.remove_out_pre(&mut rib.attr_sets);
-                adj_rib.remove_out_post(&mut rib.attr_sets);
+                // Enqueue prefix for the BGP Decision Process.
+                table.queued_prefixes.insert(prefix);
             }
-
-            // Enqueue prefix for the BGP Decision Process.
-            table.queued_prefixes.insert(prefix);
         }
+
+        // Drop the per-peer prefix counters.
+        table.prefix_counters.remove(&self.index);
     }
 
     // Clears the neighbor session.
@@ -1058,7 +1132,7 @@ impl Neighbor {
     }
 
     // Determines whether the given route is eligible for distribution.
-    pub(crate) fn distribute_filter(&self, route: &Route) -> bool {
+    pub(crate) fn distribute_filter(&self, route: &BestRoute) -> bool {
         // Suppress advertisements to peers if their AS number is present
         // in the AS path of the route, unless overridden by configuration.
         if !self.config.as_path_options.disable_peer_as_filter

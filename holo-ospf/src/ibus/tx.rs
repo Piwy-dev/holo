@@ -4,7 +4,6 @@
 // SPDX-License-Identifier: MIT
 //
 
-use std::collections::BTreeSet;
 use std::net::IpAddr;
 
 use holo_utils::ibus::IbusChannelsTx;
@@ -51,7 +50,7 @@ pub(crate) fn route_install<V>(
                     addr: <V::IpAddr as Into<IpAddr>>::into(addr),
                     labels: nexthop
                         .sr_label
-                        .map(|label| vec![label])
+                        .map(|label| [label].into())
                         .unwrap_or_default(),
                 }
             }
@@ -62,7 +61,7 @@ pub(crate) fn route_install<V>(
                 }
             }
         })
-        .collect::<BTreeSet<_>>();
+        .collect::<Vec<_>>();
 
     // Install route.
     let msg = RouteMsg {
@@ -86,7 +85,7 @@ pub(crate) fn route_install<V>(
         let msg = LabelUninstallMsg {
             protocol: V::PROTOCOL,
             label: old_sr_label,
-            nexthops: BTreeSet::new(),
+            nexthops: Vec::new(),
             route: None,
         };
         ibus_tx.route_mpls_del(msg);
@@ -134,7 +133,7 @@ pub(crate) fn route_uninstall<V>(
         let msg = LabelUninstallMsg {
             protocol: V::PROTOCOL,
             label: *sr_label,
-            nexthops: BTreeSet::new(),
+            nexthops: Vec::new(),
             route: None,
         };
         ibus_tx.route_mpls_del(msg);
@@ -167,7 +166,7 @@ pub(crate) fn adj_sid_install<V>(
         nexthops: [Nexthop::Address {
             ifindex: iface.system.ifindex.unwrap(),
             addr: nbr_addr.into(),
-            labels: vec![Label::implicit_null()],
+            labels: [Label::implicit_null()].into(),
         }]
         .into(),
         route: None,
@@ -183,7 +182,7 @@ where
     let msg = LabelUninstallMsg {
         protocol: V::PROTOCOL,
         label,
-        nexthops: BTreeSet::new(),
+        nexthops: Vec::new(),
         route: None,
     };
     ibus_tx.route_mpls_del(msg);
