@@ -126,7 +126,9 @@ pub(crate) fn process_nbr_msg(
                 }
                 Message::Update(msg) => {
                     nbr.fsm_event(instance, fsm::Event::RcvdUpdate);
-                    process_nbr_update(instance, nbr, msg)?;
+                    if nbr.state == fsm::State::Established {
+                        process_nbr_update(instance, nbr, msg)?;
+                    }
                 }
                 Message::Notification(msg) => {
                     nbr.fsm_event(instance, fsm::Event::RcvdNotif(msg.clone()));
@@ -137,7 +139,10 @@ pub(crate) fn process_nbr_msg(
                     nbr.fsm_event(instance, fsm::Event::RcvdKalive);
                 }
                 Message::RouteRefresh(msg) => {
-                    process_nbr_route_refresh(instance, nbr, msg)?;
+                    nbr.fsm_event(instance, fsm::Event::RcvdRouteRefresh);
+                    if nbr.state == fsm::State::Established {
+                        process_nbr_route_refresh(instance, nbr, msg)?;
+                    }
                 }
             }
         }
@@ -561,7 +566,7 @@ where
 
                 // Update route's attributes before transmission.
                 let mut attrs = rpinfo.attrs;
-                rib::attrs_tx_update(&mut attrs, nbr, instance.config.asn);
+                rib::attrs_tx_update::<A>(&mut attrs, nbr, instance.config.asn);
 
                 let mut advertise = vec![];
                 for prefix in prefixes {

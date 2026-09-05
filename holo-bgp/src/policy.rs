@@ -70,6 +70,7 @@ pub(crate) fn neighbor_apply(
     let mut modified: BTreeMap<Attrs, Vec<IpNetwork>> = BTreeMap::new();
     for prefix in prefixes {
         match process_policies(
+            policy_type,
             afi_safi,
             prefix,
             &rpinfo,
@@ -131,6 +132,7 @@ pub(crate) fn redistribute_apply(
 ) {
     // Process routing policies.
     let result = process_policies(
+        PolicyType::Import,
         afi_safi,
         prefix,
         &rpinfo,
@@ -157,6 +159,7 @@ pub(crate) fn redistribute_apply(
 // borrowed variant of the returned copy-on-write value means the route was
 // accepted unmodified.
 fn process_policies<'a>(
+    policy_type: PolicyType,
     afi_safi: AfiSafi,
     prefix: IpNetwork,
     rpinfo: &'a RoutePolicyInfo,
@@ -164,7 +167,6 @@ fn process_policies<'a>(
     match_sets: &MatchSets,
     default_policy: DefaultPolicyType,
 ) -> PolicyResult<Cow<'a, RoutePolicyInfo>> {
-    let mut matches = false;
     let mut rpinfo = Cow::Borrowed(rpinfo);
 
     for stmt in policies.iter().flat_map(|policy| policy.stmts.values()) {
@@ -177,26 +179,37 @@ fn process_policies<'a>(
             continue;
         }
 
-        matches = true;
-
         // Process actions defined in the policy statement.
+        let mut accept = false;
         for action in stmt.actions.values() {
             // The "policy-result" action doesn't modify the route, so
             // handle it here to keep the route policy info borrowed.
-            if let PolicyAction::Accept(accept) = action {
-                if !*accept {
+            if let PolicyAction::Accept(value) = action {
+                if !*value {
                     return PolicyResult::Reject;
                 }
+                accept = true;
                 continue;
             }
 
-            process_stmt_action(&mut rpinfo.to_mut().attrs, action, match_sets);
+            process_stmt_action(
+                &mut rpinfo.to_mut().attrs,
+                action,
+                policy_type,
+                match_sets,
+            );
+        }
+
+        // An "accept-route" action terminates the evaluation of the policy
+        // chain.
+        if accept {
+            return PolicyResult::Accept(rpinfo);
         }
     }
 
-    // Check default policy if no definition in the policy chain was
-    // satisfied.
-    if !matches && default_policy == DefaultPolicyType::RejectRoute {
+    // Apply the default policy once the end of the policy chain is reached
+    // without a final route disposition.
+    if default_policy == DefaultPolicyType::RejectRoute {
         return PolicyResult::Reject;
     }
 
@@ -232,11 +245,7 @@ fn process_stmt_condition(
         PolicyCondition::MatchPrefixSet(value) => {
             let af = prefix.address_family();
             match match_sets.prefixes.get(&(value.clone(), af)) {
-                Some(set) => set.prefixes.iter().any(|range| {
-                    prefix.ip() == range.prefix.ip()
-                        && prefix.prefix() >= range.masklen_lower
-                        && prefix.prefix() <= range.masklen_upper
-                }),
+                Some(set) => set.matches(prefix),
                 None => false,
             }
         }
@@ -383,6 +392,7 @@ fn process_stmt_condition(
 fn process_stmt_action(
     attrs: &mut Attrs,
     action: &PolicyAction,
+    policy_type: PolicyType,
     match_sets: &MatchSets,
 ) {
     match action {
@@ -414,10 +424,29 @@ fn process_stmt_action(
             }
             // "set-next-hop"
             BgpPolicyAction::SetNexthop(set_nexthop) => {
-                attrs.base.nexthop = match set_nexthop {
-                    BgpNexthop::Addr(addr) => Some(*addr),
-                    BgpNexthop::NexthopSelf => None,
-                };
+                match set_nexthop {
+                    BgpNexthop::Addr(addr) => {
+                        attrs.base.nexthop = Some(*addr);
+                    }
+                    BgpNexthop::NexthopSelf => {
+                        // Ignore the action in the import direction, as it
+                        // would install a route with a local address as next
+                        // hop.
+                        if policy_type == PolicyType::Import {
+                            return;
+                        }
+
+                        // Unsetting the next hop leaves it to be resolved to
+                        // the source address of the session at transmission
+                        // time.
+                        attrs.base.nexthop = None;
+                    }
+                }
+
+                // The link-local next hop identifies the router that
+                // advertised the route, which is no longer the requested
+                // next hop.
+                attrs.base.ll_nexthop = None;
             }
             // "set-med"
             BgpPolicyAction::SetMed(set_med) => match set_med {

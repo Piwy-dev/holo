@@ -8,13 +8,13 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 
-use bytes::BytesMut;
 use derive_new::new;
 use holo_yang::{ToYang, TryFromYang};
 use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::bytes::BytesMut;
 use crate::ip::AddressFamily;
 use crate::mpls::Label;
 
@@ -251,7 +251,7 @@ pub enum BierEncapsulationType {
     Ethernet,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[derive(Deserialize, Serialize)]
 pub enum UnderlayProtocolType {
     IsIs,

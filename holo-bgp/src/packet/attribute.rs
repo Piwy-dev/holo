@@ -8,9 +8,8 @@ use std::collections::{BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use bitflags::bitflags;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
 use derive_new::new;
-use holo_utils::bytes::{BytesExt, BytesMutExt};
+use holo_utils::bytes::{Bytes, BytesMut};
 use holo_utils::ip::{Ipv4AddrExt, Ipv6AddrExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
@@ -156,24 +155,12 @@ impl Attrs {
         &self,
         buf: &mut BytesMut,
         reach: &Option<ReachNlri>,
-        mp_reach: &Option<MpReachNlri>,
-        mp_unreach: &Option<MpUnreachNlri>,
         cxt: &EncodeCxt,
     ) {
         // Check whether the 4-octet AS number capability has been negotiated.
         let four_byte_asn_cap = cxt
             .capabilities
             .contains(&NegotiatedCapability::FourOctetAsNumber);
-
-        // RFC 7606 - Section 5.1:
-        // "The MP_REACH_NLRI or MP_UNREACH_NLRI attribute (if present) SHALL
-        // be encoded as the very first path attribute in an UPDATE message".
-        if let Some(mp_reach) = mp_reach {
-            mp_reach.encode(buf);
-        }
-        if let Some(mp_unreach) = mp_unreach {
-            mp_unreach.encode(buf);
-        }
 
         // RFC 4271 - Section 5:
         // "The sender of an UPDATE message SHOULD order path attributes within
@@ -351,7 +338,7 @@ impl Attrs {
                 withdraw = true;
                 break;
             }
-            let mut buf = buf.copy_to_bytes(attr_len);
+            let mut buf = buf.try_copy_to_bytes(attr_len)?;
 
             // RFC 7606 - Section 3.c:
             // "If the value of either the Optional or Transitive bits in the
@@ -577,6 +564,16 @@ impl Attrs {
         }
         if let Some(large_comm) = &self.large_comm {
             length += large_comm.length();
+        }
+        if let Some(unknown) = &self.unknown {
+            for unknown_attr in unknown.iter() {
+                length += if unknown_attr.flags.contains(AttrFlags::EXTENDED) {
+                    ATTR_MIN_LEN_EXT
+                } else {
+                    ATTR_MIN_LEN
+                };
+                length += unknown_attr.value.len() as u16;
+            }
         }
 
         length
@@ -1127,7 +1124,7 @@ impl ClusterList {
 impl MpReachNlri {
     pub const MIN_LEN: u16 = 5;
 
-    fn encode(&self, buf: &mut BytesMut) {
+    pub(crate) fn encode(&self, buf: &mut BytesMut) {
         buf.put_u8((AttrFlags::OPTIONAL | AttrFlags::EXTENDED).bits());
         buf.put_u8(AttrType::MpReachNlri as u8);
 
@@ -1266,7 +1263,7 @@ impl MpReachNlri {
 impl MpUnreachNlri {
     pub const MIN_LEN: u16 = 3;
 
-    fn encode(&self, buf: &mut BytesMut) {
+    pub(crate) fn encode(&self, buf: &mut BytesMut) {
         buf.put_u8((AttrFlags::OPTIONAL | AttrFlags::EXTENDED).bits());
         buf.put_u8(AttrType::MpUnreachNlri as u8);
 

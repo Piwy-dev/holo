@@ -7,20 +7,21 @@
 use std::time::SystemTime;
 
 use holo_northbound::{Path, PathElem};
+use holo_utils::auth::Users;
 use holo_utils::task::Task;
 use holo_yang::YANG_CTX;
 use itertools::join;
 use tokio::sync::mpsc::Sender;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::{Server, ServerTlsConfig};
+use tonic::service::interceptor::InterceptedService;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{error, trace, trace_span};
+use tracing::{trace, trace_span};
 use yang5::data::{Data, DataFormat, DataPrinterFlags, DataTree};
 use yang5::schema::SchemaNodeKind;
 
 use crate::config;
-use crate::northbound::client::api;
+use crate::northbound::client::{api, grpc};
 
 const GNMI_VERSION: &str = "0.8.1";
 
@@ -173,6 +174,7 @@ impl proto::GNmi for GNmiService {
         grpc_request: Request<proto::SetRequest>,
     ) -> Result<Response<proto::SetResponse>, Status> {
         let yang_ctx = YANG_CTX.get().unwrap();
+        let author = grpc::request_author(&grpc_request);
         let grpc_request = grpc_request.into_inner();
         trace_span!("northbound").in_scope(|| {
             trace_span!("client", name = "gnmi").in_scope(|| {
@@ -234,6 +236,7 @@ impl proto::GNmi for GNmiService {
         // Convert and relay gNMI request to the northbound.
         let nb_request = api::client::CommitRequest {
             config: api::CommitConfiguration::Replace(candidate),
+            author,
             comment: Default::default(),
             confirmed_timeout: 0,
             responder: responder_tx,
@@ -508,48 +511,28 @@ fn get_timestamp() -> i64 {
 pub(crate) fn start(
     config: &config::Gnmi,
     request_tx: Sender<api::client::Request>,
-) -> Task<()> {
-    let address = config
+    users: watch::Receiver<Users>,
+) -> Vec<Task<()>> {
+    config
         .address
-        .parse()
-        .expect("Failed to parse gNMI server address");
-    let service = GNmiService { request_tx };
-
-    let server = Server::builder();
-    let mut server = match config.tls.enabled {
-        true => {
-            let cert = match std::fs::read(&config.tls.certificate) {
-                Ok(value) => value,
-                Err(error) => {
-                    error!(%error, "failed to read TLS certificate");
-                    std::process::exit(1);
-                }
+        .iter()
+        .map(|address| {
+            let (listener, mut server) =
+                grpc::server_init("gNMI", address, &config.tls);
+            let auth = grpc::Authenticator::new(users.clone(), &listener);
+            let service = GNmiService {
+                request_tx: request_tx.clone(),
             };
-            let key = match std::fs::read(&config.tls.key) {
-                Ok(value) => value,
-                Err(error) => {
-                    error!(%error, "failed to read TLS key");
-                    std::process::exit(1);
-                }
-            };
-
-            let identity = tonic::transport::Identity::from_pem(cert, key);
-            server
-                .tls_config(ServerTlsConfig::new().identity(identity))
-                .expect("Failed to setup gNMI TLS")
-        }
-        false => server,
-    };
-
-    Task::spawn(async move {
-        server
-            .add_service(
+            let router = server.add_service(InterceptedService::new(
                 proto::GNmiServer::new(service)
                     .max_encoding_message_size(usize::MAX)
                     .max_decoding_message_size(usize::MAX),
-            )
-            .serve(address)
-            .await
-            .expect("Failed to start gNMI service");
-    })
+                move |request| auth.intercept(request),
+            ));
+
+            Task::spawn(async move {
+                grpc::serve("gNMI", listener, router).await;
+            })
+        })
+        .collect()
 }

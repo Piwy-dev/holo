@@ -8,7 +8,7 @@ pub mod serde;
 pub mod types;
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock as Lazy, OnceLock};
 
 use maplit::hashmap;
@@ -185,6 +185,10 @@ static YANG_EMBEDDED_MODULES: Lazy<EmbeddedModules> = Lazy::new(|| {
             include_str!("../modules/deviations/holo-ietf-access-control-list-deviations.yang"),
         EmbeddedModuleKey::new("holo-ietf-bgp-deviations", None, None, None) =>
             include_str!("../modules/deviations/holo-ietf-bgp-deviations.yang"),
+        EmbeddedModuleKey::new("holo-ietf-bfd-ip-mh-deviations", None, None, None) =>
+            include_str!("../modules/deviations/holo-ietf-bfd-ip-mh-deviations.yang"),
+        EmbeddedModuleKey::new("holo-ietf-bfd-ip-sh-deviations", None, None, None) =>
+            include_str!("../modules/deviations/holo-ietf-bfd-ip-sh-deviations.yang"),
         EmbeddedModuleKey::new("holo-ietf-bier-deviations", None, None, None) =>
             include_str!("../modules/deviations/holo-ietf-bier-deviations.yang"),
         EmbeddedModuleKey::new("holo-ietf-mpls-ldp-deviations", None, None, None) =>
@@ -388,6 +392,10 @@ pub static YANG_FEATURES: Lazy<HashMap<&'static str, Vec<&'static str>>> =
                 "route-refresh",
                 "ttl-security",
             ],
+            "iana-crypt-hash" => vec![
+                "crypt-hash-sha-256",
+                "crypt-hash-sha-512",
+            ],
             "ietf-bfd-types" => vec![
                 "client-base-cfg-parms",
                 "single-minimum-interval",
@@ -442,6 +450,10 @@ pub static YANG_FEATURES: Lazy<HashMap<&'static str, Vec<&'static str>>> =
             "ietf-segment-routing-common" => vec![
                 "sid-last-hop-behavior",
             ],
+            "ietf-system" => vec![
+                "authentication",
+                "local-users",
+            ],
             "ietf-vrrp" => vec![
                 "validate-interval-errors",
             ],
@@ -491,12 +503,44 @@ pub fn new_context() -> Context {
 }
 
 // Loads the given YANG modules and their associated deviations.
+//
+// All modules are loaded at once so that the schema trees are compiled a
+// single time.
 pub fn load_modules(ctx: &mut Context, modules: &[&str]) {
-    for module_name in modules.iter() {
-        load_module(ctx, module_name);
-    }
-    for module_name in modules.iter() {
-        load_deviations(ctx, module_name);
+    // Names of all embedded YANG modules.
+    static EMBEDDED_MODULE_NAMES: Lazy<HashSet<&'static str>> =
+        Lazy::new(|| {
+            YANG_EMBEDDED_MODULES
+                .keys()
+                .map(|key| key.mod_name())
+                .collect()
+        });
+
+    let mut load = modules
+        .iter()
+        .map(|name| {
+            let features = YANG_FEATURES
+                .get(name)
+                .map(|features| features.as_slice())
+                .unwrap_or_else(|| &[]);
+            (*name, None, features)
+        })
+        .collect::<Vec<_>>();
+
+    // Not all modules have deviations. Requesting one that doesn't exist needs
+    // to be avoided, since a failed load discards the whole batch.
+    load.extend(
+        modules
+            .iter()
+            .filter_map(|name| {
+                let name = format!("holo-{name}-deviations");
+                EMBEDDED_MODULE_NAMES.get(name.as_str()).copied()
+            })
+            .map(|name| (name, None, &[] as &[&str])),
+    );
+
+    if let Err(error) = ctx.load_modules(&load) {
+        panic!("failed to load YANG modules: {error}");
     }
 }
 

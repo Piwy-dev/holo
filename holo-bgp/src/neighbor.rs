@@ -36,7 +36,7 @@ use crate::packet::message::{
     Capability, DecodeCxt, EncodeCxt, KeepaliveMsg, Message,
     NegotiatedCapability, NotificationMsg, OpenMsg, RouteRefreshMsg,
 };
-use crate::rib::{BestRoute, Rib, RouteOrigin};
+use crate::rib::{BestRoute, Rib};
 #[cfg(feature = "testing")]
 use crate::tasks::messages::ProtocolOutputMsg;
 use crate::tasks::messages::input::{NbrTimerMsg, TcpConnectMsg};
@@ -233,6 +233,8 @@ pub mod fsm {
         RcvdKalive,
         // UpdateMsg
         RcvdUpdate,
+        // RouteRefreshMsg (not an RFC 4271 event)
+        RcvdRouteRefresh,
         // ConnectRetryTimer_Expires
         // HoldTimer_Expires
         // AutomaticStart
@@ -449,6 +451,11 @@ impl Neighbor {
                 }
                 fsm::Event::RcvdOpen(_msg) => {
                     // TODO: collision detection
+                    let error_code = ErrorCode::FiniteStateMachineError;
+                    let error_subcode =
+                        FsmErrorSubcode::UnexpectedMessageInOpenConfirm;
+                    let msg = NotificationMsg::new(error_code, error_subcode);
+                    self.session_close(rib, instance.tx, Some(msg));
                     Some(fsm::State::Idle)
                 }
                 fsm::Event::RcvdNotif(_) => {
@@ -500,6 +507,7 @@ impl Neighbor {
                     self.holdtime_restart();
                     None
                 }
+                fsm::Event::RcvdRouteRefresh => None,
                 fsm::Event::Timer(fsm::Timer::Hold) => {
                     let error_code = ErrorCode::HoldTimerExpired;
                     let error_subcode = 0;
@@ -1032,7 +1040,11 @@ impl Neighbor {
             let (_, prefixes) =
                 groups.entry(route.attrs.key()).or_insert_with(|| {
                     let mut attrs = route.attrs.get();
-                    rib::attrs_tx_update(&mut attrs, self, instance.config.asn);
+                    rib::attrs_tx_update::<A>(
+                        &mut attrs,
+                        self,
+                        instance.config.asn,
+                    );
                     (attrs, vec![])
                 });
             prefixes.push(prefix);
@@ -1147,8 +1159,8 @@ impl Neighbor {
         // routing information contained in that UPDATE message to other
         // internal peers".
         if route.route_type == RouteType::Internal
-            && let RouteOrigin::Neighbor { remote_addr, .. } = &route.origin
-            && *remote_addr == self.remote_addr
+            && !route.origin.is_local()
+            && self.peer_type == PeerType::Internal
         {
             return false;
         }
