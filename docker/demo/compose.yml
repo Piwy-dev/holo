@@ -1,0 +1,47 @@
+services:
+  r1:
+    image: holo-bundle-dev
+    privileged: true
+    platform: linux/amd64
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    entrypoint: ["holod"]
+    command: ["-c", "/etc/holod.toml"]
+    volumes:
+      - ./holod.toml:/etc/holod.toml:ro
+      - ./ospf-config.json:/etc/holod/ospf-config.json:ro
+    networks:
+      left:
+        ipv4_address: 172.30.0.2
+      transit:
+        ipv4_address: 172.31.0.2
+
+  r2:
+    image: holo-bundle-dev
+    privileged: true
+    platform: linux/amd64
+    entrypoint: ["sh", "-lc", "ip route replace default via 172.31.0.2 dev eth0 && exec holod -c /etc/holod.toml"]
+    volumes:
+      - ./holod.toml:/etc/holod.toml:ro
+    networks:
+      transit:
+        ipv4_address: 172.31.0.3
+
+  host:
+    image: holo-bundle-dev
+    privileged: true
+    platform: linux/amd64
+    entrypoint: ["sh", "-lc", "ip route replace default via 172.30.0.2 dev eth0 && exec sleep infinity"]
+    networks:
+      left:
+        ipv4_address: 172.30.0.10
+
+networks:
+  left:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  transit:
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

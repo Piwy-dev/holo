@@ -1,0 +1,88 @@
+# User and group holod runs as (members of @group get administrative access)
+user = "holo"
+group = "holoadm"
+
+# Path to the non-volatile memory storage for configuration transactions,
+# graceful-restart information, authentication sequence numbers, and more.
+#
+# Needs to be writable by @user or @group.
+database_path = "/var/opt/holo/holo.db"
+startup_config_path = "/etc/holod/ospf-config.json"
+
+# Logging configuration
+[logging]
+  # Logging to journald
+  [logging.journald]
+    # Enable or disable
+    enabled = false
+
+  # Logging to a file
+  [logging.file]
+    # Enable or disable
+    enabled = true
+    # File path (needs to be writable by @user or @group)
+    dir = "/var/log/holo"
+    # File name
+    name = "holod.log"
+    # Log rotation (options: "never", "daily", "hourly")
+    rotation = "never"
+    # Logging style (options: "full", "compact", "pretty", "json")
+    style = "full"
+    # Enable or disable ANSI terminal colors
+    colors = false
+    # Sets whether or not the thread ID of the current thread is displayed
+    show_thread_id = false
+    # Sets whether or not an event’s source code file path and line number are displayed
+    show_source = false
+
+  # Logging to the standard output
+  [logging.stdout]
+    # Enable or disable
+    enabled = false
+    # Logging style (options: "full", "compact", "pretty", "json")
+    style = "full"
+    # Enable or disable ANSI terminal colors
+    colors = false
+    # Sets whether or not the thread ID of the current thread is displayed
+    show_thread_id = false
+    # Sets whether or not an event’s source code file path and line number are displayed
+    show_source = false
+
+# Event recorder (useful for bug reporting)
+[event_recorder]
+  # Enable or disable the event recorder
+  enabled = false
+  # Directory where to save the files (needs to be writable by @user or @group)
+  dir = "/var/opt/holo"
+
+# Daemon plugins
+[plugins]
+  # gRPC northbound plugin configuration
+  [plugins.grpc]
+    # Enable or disable the plugin
+    enabled = true
+    # gRPC server listening addresses (a leading slash means a Unix socket)
+    #
+    # TCP clients authenticate as users under /ietf-system:system/authentication/user
+    address = ["/var/opt/holo/holod.sock"]
+    # TLS certificate and key, required by TCP listeners only
+    [plugins.grpc.tls]
+      # TLS certificate
+      certificate = "/etc/holo/holo.pem"
+      # TLS key
+      key = "/etc/holo/holo.key"
+
+  # gNMI northbound plugin configuration
+  [plugins.gnmi]
+    # Enable or disable the plugin
+    enabled = false
+    # gNMI server listening addresses (a leading slash means a Unix socket)
+    #
+    # TCP clients authenticate as users under /ietf-system:system/authentication/user
+    address = ["0.0.0.0:9339"]
+    # TLS certificate and key, required by TCP listeners only
+    [plugins.gnmi.tls]
+      # TLS certificate
+      certificate = "/etc/holo/holo.pem"
+      # TLS key
+      key = "/etc/holo/holo.key"

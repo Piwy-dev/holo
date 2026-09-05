@@ -42,9 +42,25 @@ The `holo-bundle` build accepts two optional build arguments that specify which 
 
 ### Build both images at once
 
-The `docker/build.sh` script runs both builds in sequence, layering `holo-bundle` on top of the `holod` image that was just built instead of the one published on the registry:
+The `docker/build.sh` script runs both builds in sequence, layering `holo-bundle-dev` on top of the local `holod` image that was just built instead of the one published on the registry:
+
 ```sh
-./docker/build.sh
+./docker/build.sh --profile dev
+```
+
+Use this script for local development. Do not add `--no-cache`: the Dockerfile
+uses BuildKit cache mounts for the Cargo registry and target directory, so the
+first build is slow but later builds only recompile changed crates.
+
+On an Apple Silicon Mac, the demo currently uses `linux/amd64` images because
+the published `holo-cli` image is amd64. Docker Desktop runs those images with
+emulation, so the first build can take several minutes. The warning about
+`linux/amd64` versus `linux/arm64` is expected.
+
+The platform can be overridden when all required images are available for ARM64:
+
+```sh
+./docker/build.sh --profile dev --platform linux/arm64
 ```
 
 The build profile defaults to `dev` and can be changed with the `--profile` argument:

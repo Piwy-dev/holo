@@ -11,6 +11,7 @@ FROM ${HOLOD_IMAGE}
 # Install useful system tools and 'less' for CLI paging
 RUN apt-get update && \
     apt-get install -y ifupdown \
+  iproute2 \
     iputils-ping \
     net-tools \
     tcpdump \

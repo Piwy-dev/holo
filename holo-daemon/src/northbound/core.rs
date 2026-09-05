@@ -29,8 +29,8 @@ use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, error, info, instrument, trace, warn};
 use yang5::data::{
-    Data, DataDiffFlags, DataFormat, DataPrinterFlags, DataTree,
-    DataValidationFlags,
+    Data, DataDiffFlags, DataFormat, DataParserFlags, DataPrinterFlags,
+    DataTree, DataValidationFlags,
 };
 
 use crate::config::Config;
@@ -118,7 +118,17 @@ impl Northbound {
 
         // Create empty running configuration.
         let yang_ctx = YANG_CTX.get().unwrap();
-        let running_config = Arc::new(DataTree::new(yang_ctx));
+        let mut running_config = DataTree::new(yang_ctx);
+
+        // Load startup configuration if specified.
+        if let Some(config_path) = &config.startup_config_path {
+            match load_startup_config(yang_ctx, &mut running_config, config_path) {
+                Ok(_) => info!("Loaded startup configuration from {}", config_path),
+                Err(err) => warn!("Failed to load startup configuration: {}", err),
+            }
+        }
+
+        let running_config = Arc::new(running_config);
 
         // Start provider tasks (e.g. interfaces, routing, etc).
         let (ibus_tx, ibus_rx) = ibus::ibus_channels();
@@ -813,6 +823,24 @@ fn start_users_watch(ibus_tx: &ibus::IbusChannelsTx) -> watch::Receiver<Users> {
     task.detach();
 
     users_rx
+}
+
+// Loads and merges a startup configuration file.
+fn load_startup_config(
+    yang_ctx: &yang5::context::Context,
+    running_config: &mut DataTree<'_>,
+    config_path: &str,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let config = std::fs::read_to_string(config_path)?;
+    let startup_config = DataTree::parse_string(
+        yang_ctx,
+        &config,
+        DataFormat::JSON,
+        DataParserFlags::NO_VALIDATION,
+        DataValidationFlags::NO_STATE,
+    )?;
+    running_config.merge(&startup_config)?;
+    Ok(())
 }
 
 // Registers the YANG paths and validation functions of a data provider.
