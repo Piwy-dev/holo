@@ -1437,6 +1437,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "holo-pim"
+version = "0.9.0"
+
+[[package]]
 name = "holo-platform"
 version = "0.9.0"
 
