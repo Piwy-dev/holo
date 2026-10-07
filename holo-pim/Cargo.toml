@@ -16,6 +16,9 @@ serde.workspace = true
 [lints]
 workspace = true
 
+[dev-dependencies]
+yang5 = { workspace = true, features = ["bundled"] }
+
 [build-dependencies]
 holo-yang = { path = "../holo-yang", features = ["pim"] }
 yang5 = { workspace = true, features = ["bundled"] }
