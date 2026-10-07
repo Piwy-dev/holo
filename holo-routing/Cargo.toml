@@ -31,6 +31,7 @@ holo-igmp = { path = "../holo-igmp", optional = true }
 holo-isis = { path = "../holo-isis", optional = true }
 holo-ldp = { path = "../holo-ldp", optional = true }
 holo-ospf = { path = "../holo-ospf", optional = true }
+holo-pim = { path = "../holo-pim", optional = true }
 holo-rip = { path = "../holo-rip", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -56,4 +57,5 @@ igmp = ["dep:holo-igmp"]
 isis = ["dep:holo-isis"]
 ldp = ["dep:holo-ldp"]
 ospf = ["dep:holo-ospf"]
+pim = ["dep:holo-pim"]
 rip = ["dep:holo-rip"]

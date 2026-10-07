@@ -765,6 +765,12 @@ fn instance_start(master: &mut Master, protocol: Protocol, name: String) {
 
             spawn_protocol_task::<Instance>(name, &master.nb_tx, &master.ibus_tx, ibus_instance_tx.clone(), ibus_instance_rx, Default::default(), master.shared.clone())
         }
+        #[cfg(feature = "pim")]
+        Protocol::PIM => {
+            use holo_pim::instance::Instance;
+
+            spawn_protocol_task::<Instance>(name, &master.nb_tx, &master.ibus_tx, ibus_instance_tx.clone(), ibus_instance_rx, Default::default(), master.shared.clone())
+        }
         #[cfg(feature = "isis")]
         Protocol::ISIS => {
             use holo_isis::instance::Instance;
