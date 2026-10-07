@@ -12,6 +12,7 @@ members = [
   "holo-ospf",
   "holo-platform",
   "holo-policy",
+  "holo-pim",
   "holo-protocol",
   "holo-rip",
   "holo-routing",
