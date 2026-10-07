@@ -172,6 +172,8 @@ pub static YANG_EMBEDDED_MODULES: Lazy<EmbeddedModules> = Lazy::new(|| {
             include_str!("../modules/augmentations/holo-key-chain.yang"),
         EmbeddedModuleKey::new("holo-ospf", None, None, None) =>
             include_str!("../modules/augmentations/holo-ospf.yang"),
+        EmbeddedModuleKey::new("holo-pim", None, None, None) =>
+            include_str!("../modules/augmentations/holo-pim.yang"),
         EmbeddedModuleKey::new("holo-ospf-dev", None, None, None) =>
             include_str!("../modules/augmentations/holo-ospf-dev.yang"),
         EmbeddedModuleKey::new("holo-rip", None, None, None) =>
@@ -265,6 +267,12 @@ pub mod implemented_modules {
     pub const IGMP: &[&str] = &[
         // IETF modules
         "ietf-igmp-mld",
+    ];
+    pub const PIM: &[&str] = &[
+        // IETF modules
+        "ietf-routing",
+        // IETF Holo augmentations
+        "holo-pim",
     ];
     pub const INTERFACE: &[&str] = &[
         // IEEE modules
@@ -370,6 +378,8 @@ pub mod implemented_modules {
             BGP,
             #[cfg(feature = "igmp")]
             IGMP,
+            #[cfg(feature = "pim")]
+            PIM,
             #[cfg(feature = "isis")]
             ISIS,
             #[cfg(feature = "ldp")]

@@ -1447,6 +1447,7 @@ dependencies = [
  "holo-yang",
  "phf 0.14.0",
  "serde",
+ "yang5",
 ]
 
 [[package]]

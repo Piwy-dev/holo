@@ -6,12 +6,16 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
-holo-northbound = { path = "../holo-northbound" }
+holo-northbound = { path = "../holo-northbound", features = ["pim"] }
 holo-protocol = { path = "../holo-protocol" }
 holo-utils = { path = "../holo-utils" }
-holo-yang = { path = "../holo-yang" }
+holo-yang = { path = "../holo-yang", features = ["pim"] }
 phf.workspace = true
 serde.workspace = true
 
 [lints]
 workspace = true
+
+[build-dependencies]
+holo-yang = { path = "../holo-yang", features = ["pim"] }
+yang5 = { workspace = true, features = ["bundled"] }

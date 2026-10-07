@@ -1,0 +1,33 @@
+module holo-pim {
+  yang-version 1.1;
+  namespace "http://holo-routing.org/yang/holo-pim";
+  prefix holo-pim;
+
+  import ietf-routing {
+    prefix rt;
+  }
+
+  organization
+    "Holo Routing Stack";
+
+  description
+    "This module defines the initial Holo PIM protocol ownership.\n     The data container is intentionally empty while the PIM\n     protocol model is being implemented.";
+
+  identity pim {
+    base rt:routing-protocol;
+    description
+      "Protocol Independent Multicast.";
+  }
+
+  augment "/rt:routing/rt:control-plane-protocols/"
+        + "rt:control-plane-protocol" {
+    when "derived-from-or-self(rt:type, 'holo-pim:pim')" {
+      description
+        "This augmentation is valid for a PIM control-plane\n         protocol instance.";
+    }
+    container pim {
+      description
+        "PIM configuration and operational state data.";
+    }
+  }
+}
