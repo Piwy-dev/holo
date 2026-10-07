@@ -323,13 +323,20 @@ fn process_pdu_hello_lan(
             .spf_delay_event(level, spf::fsm::Event::AdjacencyChange);
     }
 
+    // Schedule LSP reorigination if the adjacency topologies have changed.
+    // These topologies determine the IS reachability advertised over the LAN.
+    let hello_topologies = hello.tlvs.topologies();
+    if adj.state == AdjacencyState::Up && adj.topologies != hello_topologies {
+        adj.schedule_lsp_origination(instance);
+    }
+
     // Update adjacency with received PDU values.
     let old_priority = adj.priority;
     adj.priority = Some(priority);
     adj.lan_id = Some(lan_id);
     adj.protocols_supported = hello.tlvs.protocols_supported().collect();
     adj.area_addrs = hello.tlvs.area_addrs().cloned().collect();
-    adj.topologies = hello.tlvs.topologies();
+    adj.topologies = hello_topologies;
     adj.neighbors = hello.tlvs.neighbors().cloned().collect();
     adj.ipv4_addrs = hello.tlvs.ipv4_addrs().cloned().collect();
     adj.ipv6_addrs = hello.tlvs.ipv6_addrs().cloned().collect();
@@ -526,6 +533,13 @@ fn process_pdu_hello_p2p(
                 .protocol_input
                 .spf_delay_event(level, spf::fsm::Event::AdjacencyChange);
         }
+    }
+
+    // Schedule LSP reorigination if the adjacency topologies have changed.
+    // These topologies determine the IS reachability advertised for the
+    // neighbor.
+    if adj.state == AdjacencyState::Up && adj.topologies != hello_topologies {
+        adj.schedule_lsp_origination(instance);
     }
 
     // Update adjacency with received PDU values.
@@ -733,10 +747,13 @@ fn process_pdu_lsp(
         if lse.is_none() {
             // Self-originated LSP not found in the LSDB, so it should be purged
             // from the network.
-            lsp.set_rem_lifetime(0);
-            for iface in arenas.interfaces.iter_mut() {
-                iface.srm_list_add(instance, level, &lsp, false);
-            }
+            lsdb::lsp_purge(
+                instance,
+                arenas,
+                level,
+                lsp,
+                LspPurgeReason::Removed,
+            );
             return Ok(());
         }
 
@@ -844,7 +861,10 @@ fn process_pdu_lsp(
                         )
                     }
                 };
-                if instance.config.trace_opts.flood_reduction {
+                if instance.config.trace_opts.flood_reduction
+                    && instance.config.flooding_reduction.algo
+                        != FloodingAlgo::ZeroPruner
+                {
                     Debug::FloodDecision(level, lsp, other_iface, !allow_flood)
                         .log();
                 }
@@ -915,7 +935,10 @@ fn process_pdu_lsp(
                     &arenas.adjacencies,
                 ),
             };
-            if instance.config.trace_opts.flood_reduction {
+            if instance.config.trace_opts.flood_reduction
+                && instance.config.flooding_reduction.algo
+                    != FloodingAlgo::ZeroPruner
+            {
                 Debug::FloodDecision(level, &lsp, iface, !allow_flood).log();
             }
 
@@ -1281,11 +1304,11 @@ pub(crate) fn process_dis_election(
     match (old_dis, dis) {
         (Some(old), _) if old.myself => {
             // We're no longer the DIS.
-            iface.dis_stop(instance);
+            iface.dis_stop(instance, level);
         }
         (_, Some(new)) if new.myself => {
             // We're the new DIS.
-            iface.dis_start(instance);
+            iface.dis_start(instance, level);
         }
         _ => {}
     }
@@ -1476,44 +1499,10 @@ pub(crate) fn process_lsp_purge(
     // Lookup LSP entry in the LSDB.
     let lsdb = instance.state.lsdb.get_mut(level);
     let (_, lse) = lsdb.get_mut_by_key(&mut arenas.lsp_entries, &lse_key)?;
-    let mut lsp = lse.data.clone();
+    let lsp = lse.data.clone();
 
-    // Log LSP purge.
-    if instance.config.trace_opts.lsdb {
-        Debug::LspPurge(level, &lsp, reason).log();
-    }
-
-    // Set remaining lifetime to zero if it's not already.
-    lsp.set_rem_lifetime(0);
-
-    // Remove all existing TLVs, retaining only the LSP header.
-    lsp.tlvs = Default::default();
-
-    // Add the POI TLV if purge originator support is enabled.
-    if instance.config.purge_originator {
-        lsp.tlvs.add_purge_originator_id(
-            instance.config.system_id.unwrap(),
-            None,
-            instance.shared.hostname.clone(),
-        );
-    };
-
-    // Regenerate the LSP data, adding an authentication TLV if necessary.
-    let auth = instance.config.auth.all.method(&instance.shared.keychains);
-    let auth = auth.as_ref().and_then(|auth| auth.get_key_send());
-    lsp.encode(auth);
-
-    // Reinstall the LSP to trigger a SPF run.
-    let lse = lsdb::install(instance, &mut arenas.lsp_entries, level, lsp);
-    let lsp = &lse.data;
-
-    // Stop the LSP's refresh timer.
-    lse.refresh_timer = None;
-
-    // Send purged LSP to all interfaces.
-    for iface in arenas.interfaces.iter_mut() {
-        iface.srm_list_add(instance, level, lsp, false);
-    }
+    // Purge the LSP from the network.
+    lsdb::lsp_purge(instance, arenas, level, lsp, reason);
 
     Ok(())
 }

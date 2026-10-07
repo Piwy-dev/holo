@@ -16,7 +16,7 @@ use chrono::Utc;
 use derive_new::new;
 use holo_utils::ip::{AddressFamily, IpNetworkKind};
 use holo_utils::mac_addr::MacAddr;
-use holo_utils::sr::IgpAlgoType;
+use holo_utils::sr::PrefixSidAlgo;
 use holo_utils::task::TimeoutTask;
 use ipnetwork::IpNetwork;
 use tracing::debug_span;
@@ -63,6 +63,15 @@ pub struct Topologies<T> {
     pub ipv6_unicast: T,
 }
 
+// Candidate list (TENT) of vertices that are pending insertion into the SPT.
+#[derive(Debug)]
+struct CandidateList {
+    // Pending vertices, keyed by their identifier.
+    vertices: BTreeMap<VertexId, Vertex>,
+    // Pending vertices ordered by their distance to the root.
+    queue: BTreeSet<(u32, VertexId)>,
+}
+
 // Shortest Path Tree.
 #[derive(Debug, Default)]
 pub struct Spt {
@@ -76,14 +85,11 @@ pub struct Spt {
 //
 // A `Vertex` corresponds to a router or pseudonode.
 #[derive(Debug)]
-#[derive(new)]
 pub struct Vertex {
     pub id: VertexId,
     pub distance: u32,
     pub hops: u16,
-    #[new(default)]
     pub parents: Vec<generational_arena::Index>,
-    #[new(default)]
     pub nexthops: Vec<VertexNexthop>,
 }
 
@@ -105,7 +111,6 @@ pub struct VertexId {
 // are resolved and stored in this structure. This information is later used
 // during route computation.
 #[derive(Clone, Debug)]
-#[derive(new)]
 pub struct VertexNexthop {
     pub system_id: SystemId,
     pub iface_idx: Option<InterfaceIndex>,
@@ -115,7 +120,6 @@ pub struct VertexNexthop {
 
 // Represents an IS reachability entry attached to a vertex.
 #[derive(Debug, Eq, PartialEq)]
-#[derive(new)]
 pub struct VertexEdge {
     pub id: VertexId,
     pub cost: u32,
@@ -123,7 +127,6 @@ pub struct VertexEdge {
 
 // Represents an IP reachability entry attached to a vertex.
 #[derive(Clone, Debug)]
-#[derive(new)]
 pub struct VertexNetwork {
     pub prefix: IpNetwork,
     pub metric: u32,
@@ -219,6 +222,66 @@ impl<T> Topologies<T> {
     }
 }
 
+// ===== impl CandidateList =====
+
+impl CandidateList {
+    // Creates a candidate list seeded with the root vertex.
+    fn new(root_system_id: SystemId) -> CandidateList {
+        let id = VertexId::from(root_system_id);
+        CandidateList {
+            vertices: BTreeMap::from([(id, Vertex::new(id, 0, 0))]),
+            queue: BTreeSet::from([(0, id)]),
+        }
+    }
+
+    // Removes and returns the vertex closest to the root.
+    fn pop_first(&mut self) -> Option<Vertex> {
+        let (_, id) = self.queue.pop_first()?;
+        self.vertices.remove(&id)
+    }
+
+    // Returns a mutable reference to the entry of the given vertex, adding it
+    // to the candidate list if necessary.
+    //
+    // Returns `None` if the candidate list already contains a shorter path to
+    // that vertex.
+    fn entry(
+        &mut self,
+        id: VertexId,
+        distance: u32,
+        hops: u16,
+    ) -> Option<&mut Vertex> {
+        match self.vertices.entry(id) {
+            btree_map::Entry::Vacant(v) => {
+                // Add the vertex to the candidate list.
+                let vertex = Vertex::new(id, distance, hops);
+                self.queue.insert((distance, id));
+                Some(v.insert(vertex))
+            }
+            btree_map::Entry::Occupied(o) => {
+                let cand_v = o.into_mut();
+
+                // Ignore higher cost path.
+                if distance > cand_v.distance {
+                    return None;
+                }
+
+                // Update the vertex to use the shorter path.
+                if distance < cand_v.distance {
+                    self.queue.remove(&(cand_v.distance, id));
+                    self.queue.insert((distance, id));
+                    cand_v.distance = distance;
+                    cand_v.hops = hops;
+                    cand_v.parents.clear();
+                    cand_v.nexthops.clear();
+                }
+
+                Some(cand_v)
+            }
+        }
+    }
+}
+
 // ===== impl Spt =====
 
 impl Spt {
@@ -296,6 +359,20 @@ impl Spt {
     }
 }
 
+// ===== impl Vertex =====
+
+impl Vertex {
+    fn new(id: VertexId, distance: u32, hops: u16) -> Vertex {
+        Vertex {
+            id,
+            distance,
+            hops,
+            parents: Vec::new(),
+            nexthops: Vec::new(),
+        }
+    }
+}
+
 // ===== impl VertexId =====
 
 impl From<SystemId> for VertexId {
@@ -312,6 +389,19 @@ impl From<LanId> for VertexId {
         VertexId {
             non_pseudonode: !lan_id.is_pseudonode(),
             lan_id,
+        }
+    }
+}
+
+// ===== impl VertexNexthop =====
+
+impl From<SystemId> for VertexNexthop {
+    fn from(system_id: SystemId) -> VertexNexthop {
+        VertexNexthop {
+            system_id,
+            iface_idx: None,
+            ipv4: None,
+            ipv6: None,
         }
     }
 }
@@ -537,70 +627,25 @@ pub(crate) fn compute_spt(
 ) -> Spt {
     let lsdb = instance.state.lsdb.get(level);
     let metric_type = instance.config.metric_type.get(level);
+    let max_path_metric = match metric_type {
+        MetricType::Wide | MetricType::Both => MAX_PATH_METRIC_WIDE,
+        MetricType::Standard => MAX_PATH_METRIC_STANDARD,
+    };
     let mut used_adjs = BTreeSet::new();
 
-    // Get root vertex.
-    let root_vid = VertexId::from(root_system_id);
-    let root_v = Vertex::new(root_vid, 0, 0);
-
-    // Initialize SPT and candidate list.
+    // Initialize the SPT and the candidate list containing the root vertex.
     let mut spt = Spt::default();
-    let mut cand_list = BTreeMap::new();
-    cand_list.insert((root_v.distance, root_v.id), root_v);
+    let mut cand_list = CandidateList::new(root_system_id);
 
     // Main SPF loop.
-    'spf_loop: while let Some((_, cand_v)) = cand_list.pop_first() {
+    while let Some(cand_v) = cand_list.pop_first() {
         // Add vertex to SPT.
         let vertex_idx = spt.insert(cand_v);
         let vertex = &spt.arena[vertex_idx];
 
-        // Skip if the zeroth LSP is missing.
-        let Some(zeroth_lsp) = zeroth_lsp(vertex.id.lan_id, lsdb, lsp_entries)
-        else {
+        // Check whether the vertex's links should be traversed.
+        if !vertex_is_traversable(vertex, mt_id, instance, lsdb, lsp_entries) {
             continue;
-        };
-
-        // If the overload bit is set, we skip the links from it unless this
-        // is the local LSP.
-        //
-        // When computing a flooding topology (no MT ID), the overload check
-        // is not applied.
-        if vertex.hops != 0
-            && !zeroth_lsp.lsp_id.is_pseudonode()
-            && let Some(mt_id) = mt_id
-            && zeroth_lsp.overload_bit(mt_id)
-        {
-            continue;
-        }
-
-        // In dual-stack single-topology networks, traffic blackholing can occur
-        // if any IS or link has IPv4 enabled but not IPv6, or vice versa.
-        // To minimize the likelihood of such issues, this check ensures that
-        // the IS supports all configured protocols. We can't check address
-        // family information from the links since that information isn't
-        // available in the LSPDB.
-        if let Some(mt_id) = mt_id
-            && mt_id == MtId::Standard
-            && !zeroth_lsp.lsp_id.is_pseudonode()
-        {
-            let Some(protocols_supported) =
-                &zeroth_lsp.tlvs.protocols_supported
-            else {
-                if instance.config.trace_opts.spf {
-                    Debug::SpfMissingProtocolsTlv(vertex).log();
-                }
-                continue;
-            };
-            for af in [AddressFamily::Ipv4, AddressFamily::Ipv6] {
-                if instance.config.is_af_enabled(af)
-                    && !protocols_supported.contains(Nlpid::from(af))
-                {
-                    if instance.config.trace_opts.spf {
-                        Debug::SpfUnsupportedProtocol(vertex, af).log();
-                    }
-                    continue 'spf_loop;
-                }
-            }
         }
 
         // Iterate over all links described by the vertex's LSPs.
@@ -621,7 +666,7 @@ pub(crate) fn compute_spt(
                 lsdb,
                 lsp_entries,
             )
-            .any(|link| link.id == vertex.id)
+            .any(|reverse| reverse.id == vertex.id)
             {
                 continue;
             }
@@ -631,14 +676,9 @@ pub(crate) fn compute_spt(
                 continue;
             }
 
-            // Calculate distance to the link's vertex.
+            // Calculate distance to the link's vertex, honoring the maximum
+            // total metric value.
             let distance = vertex.distance.saturating_add(link.cost);
-
-            // Check maximum total metric value.
-            let max_path_metric = match metric_type {
-                MetricType::Wide | MetricType::Both => MAX_PATH_METRIC_WIDE,
-                MetricType::Standard => MAX_PATH_METRIC_STANDARD,
-            };
             if distance > max_path_metric {
                 if instance.config.trace_opts.spf {
                     Debug::SpfMaxPathMetric(vertex, &link, distance).log();
@@ -652,56 +692,32 @@ pub(crate) fn compute_spt(
                 hops = hops.saturating_add(1);
             }
 
-            // Check if this vertex is already present on the candidate list.
-            if let Some((cand_key, cand_v)) = cand_list
-                .iter_mut()
-                .find(|(_, cand_v)| cand_v.id == link.id)
-            {
-                match distance.cmp(&cand_v.distance) {
-                    Ordering::Less => {
-                        // Remove vertex since its key has changed. It will be
-                        // re-added with the correct key below.
-                        let cand_key = *cand_key;
-                        cand_list.remove(&cand_key);
-                    }
-                    Ordering::Equal => {}
-                    Ordering::Greater => {
-                        // Ignore higher cost path.
-                        continue;
-                    }
-                }
-            }
-            let cand_v = cand_list
-                .entry((distance, link.id))
-                .or_insert_with(|| Vertex::new(link.id, distance, hops));
+            // Add the link's vertex to the candidate list, unless a shorter
+            // path to it is already known.
+            let Some(cand_v) = cand_list.entry(link.id, distance, hops) else {
+                continue;
+            };
             cand_v.parents.push(vertex_idx);
 
-            // Update vertex's nexthops.
-            if vertex.hops == 0 {
-                if !link.id.lan_id.is_pseudonode() {
-                    let mut nexthop = VertexNexthop {
-                        system_id: link.id.lan_id.system_id,
-                        iface_idx: None,
-                        ipv4: None,
-                        ipv6: None,
-                    };
-                    if local && let Some(mt_id) = mt_id {
-                        resolve_nexthop(
-                            &mut nexthop,
-                            level,
-                            mt_id,
-                            vertex,
-                            &link,
-                            &mut used_adjs,
-                            interfaces,
-                            adjacencies,
-                        );
-                    }
-                    cand_v.nexthops.push(nexthop);
+            // Update candidate vertex's nexthops.
+            if vertex.hops != 0 {
+                cand_v.nexthops.extend(vertex.nexthops.iter().cloned());
+            } else if !link.id.lan_id.is_pseudonode() {
+                let mut nexthop = VertexNexthop::from(link.id.lan_id.system_id);
+                if local && let Some(mt_id) = mt_id {
+                    resolve_nexthop(
+                        &mut nexthop,
+                        level,
+                        mt_id,
+                        vertex,
+                        &link,
+                        &mut used_adjs,
+                        interfaces,
+                        adjacencies,
+                    );
                 }
-            } else {
-                cand_v.nexthops.extend(vertex.nexthops.clone());
-            };
+                cand_v.nexthops.push(nexthop);
+            }
         }
     }
 
@@ -743,7 +759,7 @@ fn compute_spf(
     // Compute shortest-path tree(s) if necessary.
     if spf_type == SpfType::Full {
         let root_system_id = instance.config.system_id.unwrap();
-        for mt_id in [MtId::Standard, MtId::Ipv6Unicast] {
+        for mt_id in MtId::ALL {
             if instance.config.is_topology_enabled(mt_id) {
                 let spt = compute_spt(
                     level,
@@ -783,7 +799,7 @@ fn compute_spf(
     // Since multiple topologies per address family aren't currently supported,
     // a single RIB is sufficient as there's no risk of prefix overlap.
     let mut new_rib = BTreeMap::new();
-    for mt_id in [MtId::Standard, MtId::Ipv6Unicast] {
+    for mt_id in MtId::ALL {
         if instance.config.is_topology_enabled(mt_id) {
             compute_routes(
                 level,
@@ -970,10 +986,10 @@ fn resolve_nexthop(
         InterfaceType::PointToPoint
     };
 
-    let mt_id = mt_id as u16;
     if let Some((iface, adj)) = interfaces
         .iter()
         .filter(|iface| iface.config.interface_type == interface_type)
+        .filter(|iface| iface.config.is_topology_enabled(mt_id))
         .filter_map(|iface| {
             let adj = match iface.config.interface_type {
                 InterfaceType::Broadcast => iface
@@ -982,7 +998,7 @@ fn resolve_nexthop(
                     .get(level)
                     .get_by_system_id(adjacencies, &link.id.lan_id.system_id)
                     .map(|(_, adj)| adj)
-                    .filter(|adj| adj.topologies.contains(&mt_id))
+                    .filter(|adj| adj.topologies.contains(&(mt_id as u16)))
                     .filter(|adj| adj.state == AdjacencyState::Up),
                 InterfaceType::PointToPoint => {
                     if iface.config.metric.get(level) != link.cost {
@@ -992,7 +1008,7 @@ fn resolve_nexthop(
                         .state
                         .p2p_adjacency
                         .as_ref()
-                        .filter(|adj| adj.topologies.contains(&mt_id))
+                        .filter(|adj| adj.topologies.contains(&(mt_id as u16)))
                         .filter(|adj| adj.level_usage.intersects(level))
                         .filter(|adj| adj.system_id == link.id.lan_id.system_id)
                         .filter(|adj| adj.state == AdjacencyState::Up)
@@ -1007,6 +1023,63 @@ fn resolve_nexthop(
         nexthop.ipv4 = adj.ipv4_addrs.first().copied();
         nexthop.ipv6 = adj.ipv6_addrs.first().copied();
     }
+}
+
+// Returns true if the links advertised by the given vertex should be traversed
+// during the SPT computation.
+fn vertex_is_traversable(
+    vertex: &Vertex,
+    mt_id: Option<MtId>,
+    instance: &InstanceUpView<'_>,
+    lsdb: &Lsdb,
+    lsp_entries: &Arena<LspEntry>,
+) -> bool {
+    // Skip if the zeroth LSP is missing.
+    let Some(zeroth_lsp) = zeroth_lsp(vertex.id.lan_id, lsdb, lsp_entries)
+    else {
+        return false;
+    };
+
+    // If the overload bit is set, we skip the links from it unless this
+    // is the local LSP.
+    //
+    // When computing a flooding topology (no MT ID), the overload check
+    // is not applied.
+    if vertex.hops != 0
+        && let Some(mt_id) = mt_id
+        && !zeroth_lsp.lsp_id.is_pseudonode()
+        && zeroth_lsp.overload_bit(mt_id)
+    {
+        return false;
+    }
+
+    // In dual-stack single-topology networks, traffic blackholing can occur
+    // if any IS or link has IPv4 enabled but not IPv6, or vice versa.
+    // To minimize the likelihood of such issues, this check ensures that
+    // the IS supports all configured protocols. We can't check address
+    // family information from the links since that information isn't
+    // available in the LSPDB.
+    if mt_id == Some(MtId::Standard) && !zeroth_lsp.lsp_id.is_pseudonode() {
+        let Some(protocols_supported) = &zeroth_lsp.tlvs.protocols_supported
+        else {
+            if instance.config.trace_opts.spf {
+                Debug::SpfMissingProtocolsTlv(vertex).log();
+            }
+            return false;
+        };
+        for af in [AddressFamily::Ipv4, AddressFamily::Ipv6] {
+            if instance.config.is_af_enabled(af)
+                && !protocols_supported.contains(Nlpid::from(af))
+            {
+                if instance.config.trace_opts.spf {
+                    Debug::SpfUnsupportedProtocol(vertex, af).log();
+                }
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 // Iterate over all IS reachability entries attached to a vertex.
@@ -1249,7 +1322,7 @@ fn vertex_networks<'a>(
                                 prefix_sid: reach
                                     .sub_tlvs
                                     .prefix_sids
-                                    .get(&IgpAlgoType::Spf)
+                                    .get(&(PrefixSidAlgo::Spf as u8))
                                     .cloned(),
                             }
                         });
@@ -1280,7 +1353,7 @@ fn vertex_networks<'a>(
                         prefix_sid: reach
                             .sub_tlvs
                             .prefix_sids
-                            .get(&IgpAlgoType::Spf)
+                            .get(&(PrefixSidAlgo::Spf as u8))
                             .cloned(),
                     });
                 ipv6_iter = Some(iter);

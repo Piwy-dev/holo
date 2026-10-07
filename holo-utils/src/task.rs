@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use derive_new::new;
+use rand::RngExt;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -252,6 +253,17 @@ impl TimeoutTask {
         }
     }
 
+    /// Timeouts never expire in a test build, where time is driven by the
+    /// test itself. Returns an inert handle.
+    #[cfg(feature = "testing")]
+    pub fn new<F, Fut>(_timeout: Duration, _cb: F) -> TimeoutTask
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send,
+    {
+        TimeoutTask {}
+    }
+
     /// Resets the timeout, regardless if it has already expired or not.
     ///
     /// If a new timeout value isn't specified, the last value will be reused.
@@ -289,6 +301,28 @@ impl IntervalTask {
     pub fn new<F, Fut>(
         interval: Duration,
         tick_on_start: bool,
+        cb: F,
+    ) -> IntervalTask
+    where
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send,
+    {
+        IntervalTask::with_jitter(interval, 0, tick_on_start, cb)
+    }
+
+    /// Spawns a new task that will call the provided async closure whenever the
+    /// specified interval timer ticks, with jitter applied to each period.
+    ///
+    /// Each period is drawn uniformly from the range
+    /// `[interval * (1 - jitter / 100), interval]`, so the jitter only ever
+    /// shortens the interval.
+    ///
+    /// Returns a handler that can be used to manipulate the interval task.
+    #[cfg(not(feature = "testing"))]
+    pub fn with_jitter<F, Fut>(
+        interval: Duration,
+        jitter: u8,
+        tick_on_start: bool,
         mut cb: F,
     ) -> IntervalTask
     where
@@ -297,8 +331,8 @@ impl IntervalTask {
     {
         let (control_tx, mut control_rx) = mpsc::unbounded_channel();
 
-        let next = Instant::now() + interval;
-        let next = Arc::new(Mutex::new(next));
+        let start = Instant::now() + jittered(interval, jitter);
+        let next = Arc::new(Mutex::new(start));
         let next_child = next.clone();
 
         let task = Task::spawn(
@@ -306,15 +340,22 @@ impl IntervalTask {
                 let mut interval_fut = if tick_on_start {
                     time::interval(interval)
                 } else {
-                    let start = Instant::now() + interval;
                     time::interval_at(start, interval)
                 };
 
                 loop {
                     tokio::select! {
                         // Interval timer has ticked.
-                        _ = interval_fut.tick() => {
-                            let next = Instant::now() + interval;
+                        scheduled = interval_fut.tick() => {
+                            let next = if jitter == 0 {
+                                Instant::now() + interval_fut.period()
+                            } else {
+                                // Replace the next tick with a jittered one.
+                                let period = interval_fut.period();
+                                let next = scheduled + jittered(period, jitter);
+                                interval_fut.reset_at(next);
+                                next
+                            };
                             (cb)().await;
                             *next_child.lock().unwrap() = next;
                         }
@@ -370,4 +411,16 @@ impl IntervalTask {
             Duration::ZERO
         }
     }
+}
+
+// ===== helper functions =====
+
+// Shortens the interval by a random amount of up to `jitter` percent.
+fn jittered(interval: Duration, jitter: u8) -> Duration {
+    if jitter == 0 {
+        return interval;
+    }
+
+    let min = 1.0 - f64::from(jitter.min(100)) / 100.0;
+    interval.mul_f64(rand::rng().random_range(min..=1.0))
 }

@@ -73,17 +73,24 @@ static TYPEDEFS: &[(&str, TypeSpec)] = &[
             copy_semantics: true,
         },
     ),
+    (
+        "algo-type",
+        TypeSpec {
+            rust_type: "holo_utils::sr::IgpAlgo",
+            copy_semantics: true,
+        },
+    ),
+    (
+        "metric-type",
+        TypeSpec {
+            rust_type: "IgpMetricType",
+            copy_semantics: true,
+        },
+    ),
 ];
 
 // IS-IS-specific YANG identity types.
 static IDENTITY_TYPES: &[(&str, TypeSpec)] = &[
-    (
-        "algo-type",
-        TypeSpec {
-            rust_type: "IgpAlgoType",
-            copy_semantics: true,
-        },
-    ),
     (
         "control-plane-protocol",
         TypeSpec {
@@ -113,13 +120,6 @@ static IDENTITY_TYPES: &[(&str, TypeSpec)] = &[
         },
     ),
     (
-        "metric-type",
-        TypeSpec {
-            rust_type: "IgpMetricType",
-            copy_semantics: true,
-        },
-    ),
-    (
         "mt-topology",
         TypeSpec {
             rust_type: "MtId",
@@ -129,7 +129,7 @@ static IDENTITY_TYPES: &[(&str, TypeSpec)] = &[
     (
         "prefix-sid-algorithm",
         TypeSpec {
-            rust_type: "holo_utils::sr::IgpAlgoType",
+            rust_type: "holo_utils::sr::PrefixSidAlgo",
             copy_semantics: true,
         },
     ),
@@ -203,6 +203,8 @@ static LEAF_TYPES: &[(&str, TypeSpec)] = &[
 ];
 
 fn main() {
+    holo_platform::network_backend();
+
     let mut yang_ctx = yang::new_context();
     let modules = yang::implemented_modules::ISIS;
     yang::load_modules(&mut yang_ctx, modules);

@@ -14,9 +14,9 @@ use holo_isis::packet::iana::{AslaSabmFlags, FadFlags, FloodingAlgo};
 use holo_isis::packet::pdu::{Lsp, LspFlags, LspTlvs, Pdu};
 use holo_isis::packet::subtlvs::MsdStlv;
 use holo_isis::packet::subtlvs::capability::{
-    ExcludeSrlgsStlv, FadFlagsStlv, FadStlv, FadStlvs, FapmStlv,
-    FloodingAlgoStlv, LabelBlockEntry, NodeAdminTagStlv, SrAlgoStlv,
-    SrCapabilitiesFlags, SrCapabilitiesStlv, SrLocalBlockStlv,
+    ExcludeSrlgsStlv, FadFlagsStlv, FadStlv, FadStlvs, FloodingAlgoStlv,
+    LabelBlockEntry, NodeAdminTagStlv, SrAlgoStlv, SrCapabilitiesFlags,
+    SrCapabilitiesStlv, SrLocalBlockStlv,
 };
 use holo_isis::packet::subtlvs::neighbor::{
     AdjSidFlags, AdjSidStlv, AdminGroupStlv, AslaStlv, AslaStlvs,
@@ -28,8 +28,8 @@ use holo_isis::packet::subtlvs::neighbor::{
     UnreservedBwStlv,
 };
 use holo_isis::packet::subtlvs::prefix::{
-    Ipv4SourceRidStlv, Ipv6SourceRidStlv, PrefixAttrFlags, PrefixAttrFlagsStlv,
-    PrefixSidFlags, PrefixSidStlv,
+    FapmStlv, Ipv4SourceRidStlv, Ipv6SourceRidStlv, PrefixAttrFlags,
+    PrefixAttrFlagsStlv, PrefixSidFlags, PrefixSidStlv,
 };
 use holo_isis::packet::subtlvs::spb::{IsidEntry, IsidFlags, SpbmSiStlv};
 use holo_isis::packet::tlv::{
@@ -44,7 +44,7 @@ use holo_isis::packet::tlv::{
 use holo_isis::packet::{AreaAddr, LanId, LevelNumber, LspId, SystemId};
 use holo_utils::keychain::Key;
 use holo_utils::mpls::Label;
-use holo_utils::sr::{IgpAlgoType, Sid};
+use holo_utils::sr::{PrefixSidAlgo, Sid};
 use maplit::btreemap;
 
 use super::{KEY_HMAC_MD5, KEY_HMAC_SHA256, test_decode_pdu, test_encode_pdu};
@@ -125,7 +125,7 @@ static LSP1: Lazy<(Vec<u8>, Option<&Key>, Pdu)> = Lazy::new(|| {
                             )],
                         )),
                         sr_algo: Some(SrAlgoStlv::new(
-                            [IgpAlgoType::Spf].into(),
+                            [PrefixSidAlgo::Spf as u8].into(),
                         )),
                         srlb: Some(SrLocalBlockStlv::new(vec![
                             LabelBlockEntry::new(
@@ -287,10 +287,10 @@ static LSP1: Lazy<(Vec<u8>, Option<&Key>, Pdu)> = Lazy::new(|| {
                                     ip6!("2001:db8::1"),
                                 )),
                                 prefix_sids: btreemap! {
-                                    IgpAlgoType::Spf => {
+                                    PrefixSidAlgo::Spf as u8 => {
                                         PrefixSidStlv {
                                             flags: PrefixSidFlags::N,
-                                            algo: IgpAlgoType::Spf,
+                                            algo: PrefixSidAlgo::Spf as u8,
                                             sid: Sid::Index(10),
                                         }
                                     }
@@ -333,10 +333,10 @@ static LSP1: Lazy<(Vec<u8>, Option<&Key>, Pdu)> = Lazy::new(|| {
                                     ip6!("2001:db8::1"),
                                 )),
                                 prefix_sids: btreemap! {
-                                    IgpAlgoType::Spf => {
+                                    PrefixSidAlgo::Spf as u8 => {
                                         PrefixSidStlv {
                                             flags: PrefixSidFlags::N,
-                                            algo: IgpAlgoType::Spf,
+                                            algo: PrefixSidAlgo::Spf as u8,
                                             sid: Sid::Index(11),
                                         }
                                     }

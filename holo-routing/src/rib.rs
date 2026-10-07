@@ -23,9 +23,9 @@ use prefix_trie::joint::map::JointPrefixMap;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, warn};
 
+use crate::dataplane::Dataplane;
+use crate::ibus;
 use crate::interface::Interfaces;
-use crate::netlink::NetlinkRequest;
-use crate::{ibus, netlink};
 
 #[derive(Debug)]
 pub struct Rib {
@@ -92,12 +92,18 @@ impl Rib {
     pub(crate) fn ip_route_add(&mut self, msg: RouteMsg, owner: IbusClientId) {
         let nexthops = self.resolve_nexthops(msg.nexthops);
         let rib_prefix = self.prefix_entry(msg.prefix);
-        match rib_prefix
-            .binary_search_by_key(&msg.distance, |route| route.distance)
+
+        // A protocol has one route to a prefix, which is looked up by the
+        // protocol rather than by its distance: the distance can change, as
+        // when the best BGP path moves from an external peer to an internal
+        // one, and another protocol can share it.
+        let (idx, route) = match rib_prefix
+            .iter()
+            .position(|route| route.protocol == msg.protocol)
         {
-            Ok(idx) => {
+            Some(idx) => {
                 // Update the existing IP route with the new information.
-                let route = &mut rib_prefix[idx];
+                let mut route = rib_prefix.remove(idx);
                 route.owner = owner;
                 route.kind = msg.kind;
                 route.distance = msg.distance;
@@ -107,27 +113,31 @@ impl Rib {
                 route.nexthops = nexthops;
                 route.last_updated = Utc::now();
                 route.flags.remove(RouteFlags::REMOVED);
+                (idx, route)
             }
-            Err(idx) => {
-                // If the IP route does not exist, create a new entry,
-                // keeping the list sorted by distance.
-                rib_prefix.insert(
-                    idx,
-                    Route::new(
-                        msg.protocol,
-                        owner,
-                        msg.kind,
-                        msg.distance,
-                        msg.metric,
-                        msg.tag,
-                        msg.opaque_attrs,
-                        nexthops,
-                        Utc::now(),
-                        RouteFlags::empty(),
-                    ),
-                );
-            }
-        }
+            None => (
+                rib_prefix.len(),
+                Route::new(
+                    msg.protocol,
+                    owner,
+                    msg.kind,
+                    msg.distance,
+                    msg.metric,
+                    msg.tag,
+                    msg.opaque_attrs,
+                    nexthops,
+                    Utc::now(),
+                    RouteFlags::empty(),
+                ),
+            ),
+        };
+
+        // Put the route back where it was, or at the end if it's new, then
+        // sort the list by distance. The sort keeps routes with the same
+        // distance in their order, so when routes tie the one ahead stays
+        // ahead, and updating a route doesn't change that.
+        rib_prefix.insert(idx, route);
+        rib_prefix.sort_by_key(|route| route.distance);
 
         // Add IP route to the update queue.
         self.ip_update_queue_add(msg.prefix);
@@ -313,7 +323,7 @@ impl Rib {
     pub(crate) fn process_rib_update_queue(
         &mut self,
         interfaces: &Interfaces,
-        netlink_tx: &UnboundedSender<NetlinkRequest>,
+        dataplane: &impl Dataplane,
     ) {
         // Process IP update queue.
         while let Some(prefix) = self.ip_update_queue.pop_first() {
@@ -335,11 +345,9 @@ impl Rib {
                     // Mark the route as the preferred one.
                     route.flags.insert(RouteFlags::ACTIVE);
 
-                    // Install the route using the netlink handle.
+                    // Install the route in the dataplane.
                     if route.protocol != Protocol::DIRECT {
-                        netlink::ip_route_install(
-                            netlink_tx, &prefix, route, interfaces,
-                        );
+                        dataplane.ip_route_install(&prefix, route, interfaces);
                     }
 
                     // Notify protocol instances about the updated route.
@@ -355,11 +363,9 @@ impl Rib {
             // Check if there are no routes left for this prefix.
             if rib_prefix.is_empty() {
                 if let Some(protocol) = old_best_protocol {
-                    // Uninstall the old best route using the netlink handle.
+                    // Uninstall the old best route from the dataplane.
                     if protocol != Protocol::DIRECT {
-                        netlink::ip_route_uninstall(
-                            netlink_tx, &prefix, protocol,
-                        );
+                        dataplane.ip_route_uninstall(&prefix, protocol);
                     }
 
                     // Notify protocol instances about the deleted route.
@@ -381,20 +387,16 @@ impl Rib {
 
             // Check if the route was marked for removal.
             if route.flags.contains(RouteFlags::REMOVED) {
-                // Uninstall the MPLS route using the netlink handle.
-                netlink::mpls_route_uninstall(
-                    netlink_tx,
-                    label,
-                    route.protocol,
-                );
+                // Uninstall the MPLS route from the dataplane.
+                dataplane.mpls_route_uninstall(label, route.protocol);
 
                 // Effectively remove the MPLS route.
                 self.mpls.remove(&label);
                 continue;
             }
 
-            // Install the route using the netlink handle.
-            netlink::mpls_route_install(netlink_tx, label, route, interfaces);
+            // Install the route in the dataplane.
+            dataplane.mpls_route_install(label, route, interfaces);
         }
 
         // Reevaluate all registered nexthops.
@@ -501,24 +503,17 @@ impl Rib {
     }
 
     // Uninstall all routes.
-    pub(crate) fn route_uninstall_all(
-        &mut self,
-        netlink_tx: &UnboundedSender<NetlinkRequest>,
-    ) {
+    pub(crate) fn route_uninstall_all(&mut self, dataplane: &impl Dataplane) {
         for (prefix, rib_prefix) in &self.ip {
             if let Some(route) = rib_prefix
                 .iter()
                 .find(|route| route.flags.contains(RouteFlags::ACTIVE))
             {
-                netlink::ip_route_uninstall(
-                    netlink_tx,
-                    &prefix,
-                    route.protocol,
-                );
+                dataplane.ip_route_uninstall(&prefix, route.protocol);
             }
         }
         for (label, route) in &self.mpls {
-            netlink::mpls_route_uninstall(netlink_tx, *label, route.protocol);
+            dataplane.mpls_route_uninstall(*label, route.protocol);
         }
     }
 }

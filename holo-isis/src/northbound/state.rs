@@ -18,6 +18,7 @@ use holo_utils::crypto::CryptoAlgo;
 use holo_utils::mac_addr::MacAddr;
 use holo_utils::option::OptionExt;
 use holo_utils::protocol::Protocol;
+use holo_utils::sr::{IgpAlgo, PrefixSidAlgo};
 use holo_yang::types::{HexStr, HexString, TimerValueMillis, TimerValueSecs16, Timeticks};
 use holo_yang::{ToYang, ToYangFlags};
 use ipnetwork::IpNetwork;
@@ -29,13 +30,15 @@ use crate::instance::Instance;
 use crate::interface::Interface;
 use crate::lsdb::{LspEntry, LspLogEntry, LspLogId};
 use crate::northbound::yang_gen::{self, isis};
-use crate::packet::iana::{IgpAlgoType, IgpMetricType};
-use crate::packet::subtlvs::capability::{FadStlv, FapmStlv, LabelBlockEntry};
+#[cfg(feature = "testing")]
+use crate::packet::LevelType;
+use crate::packet::iana::IgpMetricType;
+use crate::packet::subtlvs::capability::{FadStlv, LabelBlockEntry};
 use crate::packet::subtlvs::neighbor::{AdjSidStlv, AslaStlv};
-use crate::packet::subtlvs::prefix::{PrefixAttrFlags, PrefixSidStlv};
+use crate::packet::subtlvs::prefix::{FapmStlv, PrefixAttrFlags, PrefixSidStlv};
 use crate::packet::subtlvs::spb::{IsidEntry, IsidFlags, SpbmSiStlv};
 use crate::packet::tlv::{AuthenticationTlv, IpReachTlvEntry, Ipv4Reach, Ipv6Reach, IsReach, LegacyIpv4Reach, LegacyIsReach, MtCapabilityTlv, MultiTopologyEntry, RouterCapTlv, UnknownTlv};
-use crate::packet::{LanId, LevelNumber, LevelType, SystemId};
+use crate::packet::{LanId, LevelNumber, SystemId};
 use crate::route::{Nexthop, Route};
 use crate::spf::{SpfLogEntry, SpfScheduler};
 
@@ -410,9 +413,11 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::router_cap
 
     fn new(_instance: &'a Instance, router_cap: &Self::ParentListEntry) -> Option<Self> {
         let sr_algo = &router_cap.sub_tlvs.sr_algo.as_ref()?;
-        let iter = sr_algo.get().iter().copied();
+        let iter = sr_algo.get().iter().filter_map(|algo| PrefixSidAlgo::from_u8(*algo));
+        let iter_number = sr_algo.get().iter().copied();
         Some(Self {
             sr_algorithm: Some(Box::new(iter)),
+            sr_algorithm_number: Some(Box::new(iter_number)),
         })
     }
 }
@@ -449,7 +454,7 @@ impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::router_capabili
         Self {
             algo_number: Some(fad.flex_algo),
             metric_type: IgpMetricType::from_u8(fad.metric_type),
-            calc_type: IgpAlgoType::from_u8(fad.calc_type),
+            calc_type: IgpAlgo::from_u8(fad.calc_type),
             priority: Some(fad.priority),
         }
     }
@@ -460,9 +465,8 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::router_cap
 
     fn new(_instance: &'a Instance, fad: &Self::ParentListEntry) -> Option<Self> {
         let stlv = fad.sub_tlvs.exclude_admin_group.as_ref()?;
-        let iter = stlv.get().chunks(4).map(HexStr);
         Some(Self {
-            extended_admin_group: Some(Box::new(iter)),
+            extended_admin_group: Some(HexStr(stlv.get())),
         })
     }
 }
@@ -472,9 +476,8 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::router_cap
 
     fn new(_instance: &'a Instance, fad: &Self::ParentListEntry) -> Option<Self> {
         let stlv = fad.sub_tlvs.include_any_admin_group.as_ref()?;
-        let iter = stlv.get().chunks(4).map(HexStr);
         Some(Self {
-            extended_admin_group: Some(Box::new(iter)),
+            extended_admin_group: Some(HexStr(stlv.get())),
         })
     }
 }
@@ -484,9 +487,8 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::router_cap
 
     fn new(_instance: &'a Instance, fad: &Self::ParentListEntry) -> Option<Self> {
         let stlv = fad.sub_tlvs.include_all_admin_group.as_ref()?;
-        let iter = stlv.get().chunks(4).map(HexStr);
         Some(Self {
-            extended_admin_group: Some(Box::new(iter)),
+            extended_admin_group: Some(HexStr(stlv.get())),
         })
     }
 }
@@ -497,7 +499,7 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::router_cap
     fn new(_instance: &'a Instance, fad: &Self::ParentListEntry) -> Option<Self> {
         let stlv = fad.sub_tlvs.flags.as_ref()?;
         Some(Self {
-            fad_flags: stlv.get().to_yang_flags_iter(),
+            fad_flag: stlv.get().to_yang_flags_iter(),
         })
     }
 }
@@ -509,7 +511,7 @@ impl<'a> YangContainer<'a, Instance> for isis::database::levels::lsp::router_cap
         let stlv = fad.sub_tlvs.exclude_srlgs.as_ref()?;
         let iter = stlv.get().iter().copied();
         Some(Self {
-            srlgs: Some(Box::new(iter)),
+            srlg: Some(Box::new(iter)),
         })
     }
 }
@@ -1255,7 +1257,8 @@ impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::extended_ipv4_r
 
     fn new(_instance: &'a Instance, stlv: &Self::ListEntry) -> Self {
         Self {
-            algorithm: Some(stlv.algo),
+            algorithm: PrefixSidAlgo::from_u8(stlv.algo),
+            algorithm_number: Some(stlv.algo),
             label_value: stlv.sid.as_label().map(|label| label.get()),
             index_value: stlv.sid.as_index().copied(),
         }
@@ -1787,7 +1790,8 @@ impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::mt_extended_ipv
 
     fn new(_instance: &'a Instance, stlv: &Self::ListEntry) -> Self {
         Self {
-            algorithm: Some(stlv.algo),
+            algorithm: PrefixSidAlgo::from_u8(stlv.algo),
+            algorithm_number: Some(stlv.algo),
             label_value: stlv.sid.as_label().map(|label| label.get()),
             index_value: stlv.sid.as_index().copied(),
         }
@@ -1876,7 +1880,8 @@ impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::mt_ipv6_reachab
 
     fn new(_instance: &'a Instance, stlv: &Self::ListEntry) -> Self {
         Self {
-            algorithm: Some(stlv.algo),
+            algorithm: PrefixSidAlgo::from_u8(stlv.algo),
+            algorithm_number: Some(stlv.algo),
             label_value: stlv.sid.as_label().map(|label| label.get()),
             index_value: stlv.sid.as_index().copied(),
         }
@@ -1964,7 +1969,8 @@ impl<'a> YangList<'a, Instance> for isis::database::levels::lsp::ipv6_reachabili
 
     fn new(_instance: &'a Instance, stlv: &Self::ListEntry) -> Self {
         Self {
-            algorithm: Some(stlv.algo),
+            algorithm: PrefixSidAlgo::from_u8(stlv.algo),
+            algorithm_number: Some(stlv.algo),
             label_value: stlv.sid.as_label().map(|label| label.get()),
             index_value: stlv.sid.as_index().copied(),
         }
@@ -2335,13 +2341,14 @@ impl<'a> YangContainer<'a, Instance> for isis::interfaces::interface::packet_cou
     }
 }
 
+#[cfg(feature = "testing")]
 impl<'a> YangList<'a, Instance> for isis::interfaces::interface::srm::level::Level<'a> {
     type ParentListEntry = &'a Interface;
     type ListEntry = (&'a Interface, LevelNumber);
 
     fn iter(_instance: &'a Instance, &iface: &Self::ParentListEntry) -> Option<impl ListIterator<'a, Self::ListEntry>> {
         let iter = LevelType::All.into_iter().filter(|level| !iface.state.srm_list.get(*level).is_empty()).map(move |level| (iface, level));
-        Some(iter).only_in_testing()
+        Some(iter)
     }
 
     fn new(_instance: &'a Instance, (iface, level): &Self::ListEntry) -> Self {
@@ -2352,13 +2359,14 @@ impl<'a> YangList<'a, Instance> for isis::interfaces::interface::srm::level::Lev
     }
 }
 
+#[cfg(feature = "testing")]
 impl<'a> YangList<'a, Instance> for isis::interfaces::interface::ssn::level::Level<'a> {
     type ParentListEntry = &'a Interface;
     type ListEntry = (&'a Interface, LevelNumber);
 
     fn iter(_instance: &'a Instance, &iface: &Self::ParentListEntry) -> Option<impl ListIterator<'a, Self::ListEntry>> {
         let iter = LevelType::All.into_iter().filter(|level| !iface.state.ssn_list.get(*level).is_empty()).map(move |level| (iface, level));
-        Some(iter).only_in_testing()
+        Some(iter)
     }
 
     fn new(_instance: &'a Instance, (iface, level): &Self::ListEntry) -> Self {

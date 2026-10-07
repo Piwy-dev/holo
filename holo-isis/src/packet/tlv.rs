@@ -20,7 +20,6 @@ use holo_utils::ip::{
     AddressFamily, Ipv4AddrExt, Ipv4NetworkExt, Ipv6AddrExt, Ipv6NetworkExt,
 };
 use holo_utils::mac_addr::MacAddr;
-use holo_utils::sr::IgpAlgoType;
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use num_derive::FromPrimitive;
 use num_traits::{FromPrimitive, ToPrimitive};
@@ -36,12 +35,12 @@ use crate::packet::iana::{
 use crate::packet::pdu::serde_lsp_rem_lifetime_filter;
 use crate::packet::subtlvs::MsdStlv;
 use crate::packet::subtlvs::capability::{
-    FadStlv, FapmStlv, FloodingAlgoStlv, NodeAdminTagStlv, SrAlgoStlv,
+    FadStlv, FloodingAlgoStlv, NodeAdminTagStlv, SrAlgoStlv,
     SrCapabilitiesStlv, SrLocalBlockStlv,
 };
 use crate::packet::subtlvs::prefix::{
-    BierInfoStlv, Ipv4SourceRidStlv, Ipv6SourceRidStlv, PrefixAttrFlags,
-    PrefixAttrFlagsStlv, PrefixSidStlv,
+    BierInfoStlv, FapmStlv, Ipv4SourceRidStlv, Ipv6SourceRidStlv,
+    PrefixAttrFlags, PrefixAttrFlagsStlv, PrefixSidStlv,
 };
 use crate::packet::subtlvs::spb::SpbmSiStlv;
 use crate::packet::{AreaAddr, LanId, LspId, SystemId, subtlvs};
@@ -365,7 +364,7 @@ pub struct Ipv4ReachStlvs {
     pub prefix_attr_flags: Option<PrefixAttrFlagsStlv>,
     pub ipv4_source_rid: Option<Ipv4SourceRidStlv>,
     pub ipv6_source_rid: Option<Ipv6SourceRidStlv>,
-    pub prefix_sids: BTreeMap<IgpAlgoType, PrefixSidStlv>,
+    pub prefix_sids: BTreeMap<u8, PrefixSidStlv>,
     pub fapm: BTreeMap<u8, FapmStlv>,
     pub unknown: Vec<UnknownTlv>,
 }
@@ -401,7 +400,7 @@ pub struct Ipv6ReachStlvs {
     pub prefix_attr_flags: Option<PrefixAttrFlagsStlv>,
     pub ipv4_source_rid: Option<Ipv4SourceRidStlv>,
     pub ipv6_source_rid: Option<Ipv6SourceRidStlv>,
-    pub prefix_sids: BTreeMap<IgpAlgoType, PrefixSidStlv>,
+    pub prefix_sids: BTreeMap<u8, PrefixSidStlv>,
     pub fapm: BTreeMap<u8, FapmStlv>,
     pub bier: Vec<BierInfoStlv>,
     pub unknown: Vec<UnknownTlv>,

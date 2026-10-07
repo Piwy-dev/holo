@@ -73,6 +73,13 @@ static TYPEDEFS: &[(&str, TypeSpec)] = &[
             copy_semantics: true,
         },
     ),
+    (
+        "rr-cluster-id-type",
+        TypeSpec {
+            rust_type: "ClusterId",
+            copy_semantics: true,
+        },
+    ),
 ];
 
 // BGP-specific YANG identity types.
@@ -238,6 +245,8 @@ static LEAF_TYPES: &[(&str, TypeSpec)] = &[
 ];
 
 fn main() {
+    holo_platform::network_backend();
+
     let mut yang_ctx = yang::new_context();
     let modules = yang::implemented_modules::BGP;
     yang::load_modules(&mut yang_ctx, modules);

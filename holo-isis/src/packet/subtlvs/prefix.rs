@@ -14,7 +14,7 @@ use derive_new::new;
 use holo_utils::bier::{BierEncapId, BiftId};
 use holo_utils::bytes::{Bytes, BytesMut};
 use holo_utils::mpls::Label;
-use holo_utils::sr::{IgpAlgoType, Sid};
+use holo_utils::sr::Sid;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 
@@ -67,8 +67,16 @@ bitflags! {
 #[derive(Deserialize, Serialize)]
 pub struct PrefixSidStlv {
     pub flags: PrefixSidFlags,
-    pub algo: IgpAlgoType,
+    pub algo: u8,
     pub sid: Sid,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[derive(new)]
+#[derive(Deserialize, Serialize)]
+pub struct FapmStlv {
+    pub flex_algo: u8,
+    pub metric: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -219,10 +227,6 @@ impl PrefixSidStlv {
         let flags = buf.try_get_u8()?;
         let flags = PrefixSidFlags::from_bits_truncate(flags);
         let algo = buf.try_get_u8()?;
-        let Some(algo) = IgpAlgoType::from_u8(algo) else {
-            // Unsupported algorithm - ignore.
-            return Ok(None);
-        };
 
         // Parse SID (variable length).
         let sid = if !flags.intersects(PrefixSidFlags::V | PrefixSidFlags::L) {
@@ -241,7 +245,7 @@ impl PrefixSidStlv {
     pub(crate) fn encode(&self, buf: &mut BytesMut) {
         let start_pos = tlv_encode_start(buf, PrefixStlvType::PrefixSid);
         buf.put_u8(self.flags.bits());
-        buf.put_u8(self.algo as u8);
+        buf.put_u8(self.algo);
         match self.sid {
             Sid::Index(index) => buf.put_u32(index),
             Sid::Label(label) => buf.put_u24(label.get()),
@@ -256,6 +260,38 @@ impl PrefixSidStlv {
                 Sid::Index(_) => 4,
                 Sid::Label(_) => 3,
             }
+    }
+}
+
+// ===== impl FapmStlv =====
+
+impl FapmStlv {
+    const SIZE: usize = 5;
+
+    pub(crate) fn decode(
+        stlv_len: u8,
+        buf: &mut Bytes,
+    ) -> TlvDecodeResult<Self> {
+        if stlv_len as usize != Self::SIZE {
+            return Err(TlvDecodeError::InvalidLength(stlv_len));
+        }
+
+        let flex_algo = buf.try_get_u8()?;
+        let metric = buf.try_get_u32()?;
+
+        Ok(FapmStlv { flex_algo, metric })
+    }
+
+    pub(crate) fn encode(&self, buf: &mut BytesMut) {
+        let start_pos =
+            tlv_encode_start(buf, PrefixStlvType::FlexAlgoPrefixMetric);
+        buf.put_u8(self.flex_algo);
+        buf.put_u32(self.metric);
+        tlv_encode_end(buf, start_pos);
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        TLV_HDR_SIZE + Self::SIZE
     }
 }
 

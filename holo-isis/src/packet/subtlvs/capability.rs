@@ -13,15 +13,14 @@ use bitflags::bitflags;
 use derive_new::new;
 use holo_utils::bytes::{Bytes, BytesMut};
 use holo_utils::mpls::Label;
-use holo_utils::sr::{IgpAlgoType, Sid};
+use holo_utils::sr::Sid;
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use tracing::debug_span;
 
 use crate::packet::error::{TlvDecodeError, TlvDecodeResult};
 use crate::packet::iana::{
-    FadFlags, FadStlvType, LabelBindingStlvType, PrefixStlvType,
-    RouterCapStlvType,
+    FadFlags, FadStlvType, LabelBindingStlvType, RouterCapStlvType,
 };
 use crate::packet::subtlvs::neighbor::ExtAdminGroupStlv;
 use crate::packet::tlv::{
@@ -49,7 +48,7 @@ bitflags! {
 #[derive(Clone, Debug, PartialEq)]
 #[derive(new)]
 #[derive(Deserialize, Serialize)]
-pub struct SrAlgoStlv(BTreeSet<IgpAlgoType>);
+pub struct SrAlgoStlv(BTreeSet<u8>);
 
 #[derive(Clone, Debug, PartialEq)]
 #[derive(new)]
@@ -111,14 +110,6 @@ pub struct FadFlagsStlv(FadFlags);
 #[derive(Deserialize, Serialize)]
 pub struct ExcludeSrlgsStlv(Vec<u32>);
 
-#[derive(Clone, Debug, PartialEq)]
-#[derive(new)]
-#[derive(Deserialize, Serialize)]
-pub struct FapmStlv {
-    pub flex_algo: u8,
-    pub metric: u32,
-}
-
 // ===== impl SrCapabilitiesStlv =====
 
 impl SrCapabilitiesStlv {
@@ -179,10 +170,6 @@ impl SrAlgoStlv {
         let mut list = BTreeSet::new();
         for _ in 0..stlv_len {
             let algo = buf.try_get_u8()?;
-            let Some(algo) = IgpAlgoType::from_u8(algo) else {
-                // Unsupported algorithm - ignore.
-                continue;
-            };
             list.insert(algo);
         }
 
@@ -194,7 +181,7 @@ impl SrAlgoStlv {
     pub(crate) fn encode(&self, buf: &mut BytesMut) {
         let start_pos = tlv_encode_start(buf, RouterCapStlvType::SrAlgorithm);
         for algo in &self.0 {
-            buf.put_u8(*algo as u8);
+            buf.put_u8(*algo);
         }
         tlv_encode_end(buf, start_pos);
     }
@@ -203,7 +190,7 @@ impl SrAlgoStlv {
         TLV_HDR_SIZE + self.0.len()
     }
 
-    pub(crate) fn get(&self) -> &BTreeSet<IgpAlgoType> {
+    pub(crate) fn get(&self) -> &BTreeSet<u8> {
         &self.0
     }
 }
@@ -609,37 +596,5 @@ impl ExcludeSrlgsStlv {
 
     pub(crate) fn get(&self) -> &[u32] {
         &self.0
-    }
-}
-
-// ===== impl FapmStlv =====
-
-impl FapmStlv {
-    const SIZE: usize = 5;
-
-    pub(crate) fn decode(
-        stlv_len: u8,
-        buf: &mut Bytes,
-    ) -> TlvDecodeResult<Self> {
-        if stlv_len as usize != Self::SIZE {
-            return Err(TlvDecodeError::InvalidLength(stlv_len));
-        }
-
-        let flex_algo = buf.try_get_u8()?;
-        let metric = buf.try_get_u32()?;
-
-        Ok(FapmStlv { flex_algo, metric })
-    }
-
-    pub(crate) fn encode(&self, buf: &mut BytesMut) {
-        let start_pos =
-            tlv_encode_start(buf, PrefixStlvType::FlexAlgoPrefixMetric);
-        buf.put_u8(self.flex_algo);
-        buf.put_u32(self.metric);
-        tlv_encode_end(buf, start_pos);
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        TLV_HDR_SIZE + Self::SIZE
     }
 }

@@ -14,7 +14,7 @@ use holo_utils::ip::IpAddrKind;
 use holo_utils::num::SaturatingInto;
 use holo_utils::option::OptionExt;
 use holo_utils::protocol::Protocol;
-use holo_utils::sr::IgpAlgoType;
+use holo_utils::sr::PrefixSidAlgo;
 use holo_yang::types::{HexStr, TimerValueMillis, TimerValueSecs16, Timeticks};
 use holo_yang::{ToYang, ToYangFlags};
 use num_traits::FromPrimitive;
@@ -56,7 +56,7 @@ pub enum Ospfv3RouterLinkSubTlv<'a> {
 // ListEntry for OSPFv3 extended prefix sub-TLV lists.
 #[derive(Debug)]
 pub enum Ospfv3PrefixSubTlv<'a> {
-    PrefixSids(&'a BTreeMap<IgpAlgoType, ospfv3::packet::lsa::PrefixSid>),
+    PrefixSids(&'a BTreeMap<u8, ospfv3::packet::lsa::PrefixSid>),
     Biers(&'a Vec<BierStlv>),
     Unknown(&'a UnknownTlv),
 }
@@ -228,7 +228,8 @@ impl<'a> YangContainer<'a, Instance<Ospfv2>> for ospf::database::as_scope_lsa_ty
             seq_num: Some(lsa.hdr.seq_no).ignore_in_testing(),
             checksum: Some(FletcherChecksum16(lsa.hdr.cksum)).ignore_in_testing(),
             length: Some(lsa.hdr.length),
-            maxage: lsa.hdr.is_maxage().then_some(()).only_in_testing(),
+            #[cfg(feature = "testing")]
+            maxage: lsa.hdr.is_maxage().then_some(()),
         })
     }
 }
@@ -388,9 +389,11 @@ impl<'a> YangContainer<'a, Instance<Ospfv2>> for ospf::database::as_scope_lsa_ty
     fn new(_instance: &'a Instance<Ospfv2>, lse: &Self::ParentListEntry) -> Option<Self> {
         let lsa = &lse.data;
         let lsa_body = lsa.body.as_opaque_link()?.as_router_info()?;
-        let iter = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).copied();
+        let iter = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).filter_map(|algo| PrefixSidAlgo::from_u8(*algo));
+        let iter_number = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).copied();
         Some(Self {
             sr_algorithm: Some(Box::new(iter)),
+            sr_algorithm_number: Some(Box::new(iter_number)),
         })
     }
 }
@@ -506,7 +509,8 @@ impl<'a> YangList<'a, Instance<Ospfv2>> for ospf::database::as_scope_lsa_type::a
     fn new(_instance: &'a Instance<Ospfv2>, stlv: &Self::ListEntry) -> Self {
         Self {
             mt_id: Some(0),
-            algorithm: Some(stlv.algo),
+            algorithm: PrefixSidAlgo::from_u8(stlv.algo),
+            algorithm_number: Some(stlv.algo),
             label_value: stlv.sid.as_label().map(|label| label.get()),
             index_value: stlv.sid.as_index().copied(),
         }
@@ -538,7 +542,8 @@ impl<'a> YangContainer<'a, Instance<Ospfv3>> for ospf::database::as_scope_lsa_ty
             seq_num: Some(lsa.hdr.seq_no).ignore_in_testing(),
             checksum: Some(FletcherChecksum16(lsa.hdr.cksum)).ignore_in_testing(),
             length: Some(lsa.hdr.length),
-            maxage: lsa.hdr.is_maxage().then_some(()).only_in_testing(),
+            #[cfg(feature = "testing")]
+            maxage: lsa.hdr.is_maxage().then_some(()),
         })
     }
 }
@@ -647,9 +652,11 @@ impl<'a> YangContainer<'a, Instance<Ospfv3>> for ospf::database::as_scope_lsa_ty
     fn new(_instance: &'a Instance<Ospfv3>, lse: &Self::ParentListEntry) -> Option<Self> {
         let lsa = &lse.data;
         let lsa_body = lsa.body.as_router_info()?;
-        let iter = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).copied();
+        let iter = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).filter_map(|algo| PrefixSidAlgo::from_u8(*algo));
+        let iter_number = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).copied();
         Some(Self {
             sr_algorithm: Some(Box::new(iter)),
+            sr_algorithm_number: Some(Box::new(iter_number)),
         })
     }
 }
@@ -842,7 +849,8 @@ impl<'a> YangList<'a, Instance<Ospfv3>>
 
     fn new(_instance: &'a Instance<Ospfv3>, stlv: &Self::ListEntry) -> Self {
         Self {
-            algorithm: Some(stlv.algo),
+            algorithm: PrefixSidAlgo::from_u8(stlv.algo),
+            algorithm_number: Some(stlv.algo),
             label_value: stlv.sid.as_label().map(|label| label.get()),
             index_value: stlv.sid.as_index().copied(),
         }
@@ -1036,7 +1044,8 @@ impl<'a> YangContainer<'a, Instance<Ospfv2>> for ospf::areas::area::database::ar
             seq_num: Some(lsa.hdr.seq_no).ignore_in_testing(),
             checksum: Some(FletcherChecksum16(lsa.hdr.cksum)).ignore_in_testing(),
             length: Some(lsa.hdr.length),
-            maxage: lsa.hdr.is_maxage().then_some(()).only_in_testing(),
+            #[cfg(feature = "testing")]
+            maxage: lsa.hdr.is_maxage().then_some(()),
         })
     }
 }
@@ -1314,9 +1323,11 @@ impl<'a> YangContainer<'a, Instance<Ospfv2>> for ospf::areas::area::database::ar
     fn new(_instance: &'a Instance<Ospfv2>, lse: &Self::ParentListEntry) -> Option<Self> {
         let lsa = &lse.data;
         let lsa_body = lsa.body.as_opaque_area()?.as_router_info()?;
-        let iter = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).copied();
+        let iter = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).filter_map(|algo| PrefixSidAlgo::from_u8(*algo));
+        let iter_number = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).copied();
         Some(Self {
             sr_algorithm: Some(Box::new(iter)),
+            sr_algorithm_number: Some(Box::new(iter_number)),
         })
     }
 }
@@ -1434,7 +1445,8 @@ impl<'a> YangList<'a, Instance<Ospfv2>>
     fn new(_instance: &'a Instance<Ospfv2>, stlv: &Self::ListEntry) -> Self {
         Self {
             mt_id: Some(0),
-            algorithm: Some(stlv.algo),
+            algorithm: PrefixSidAlgo::from_u8(stlv.algo),
+            algorithm_number: Some(stlv.algo),
             label_value: stlv.sid.as_label().map(|label| label.get()),
             index_value: stlv.sid.as_index().copied(),
         }
@@ -1588,7 +1600,8 @@ impl<'a> YangContainer<'a, Instance<Ospfv3>> for ospf::areas::area::database::ar
             seq_num: Some(lsa.hdr.seq_no).ignore_in_testing(),
             checksum: Some(FletcherChecksum16(lsa.hdr.cksum)).ignore_in_testing(),
             length: Some(lsa.hdr.length),
-            maxage: lsa.hdr.is_maxage().then_some(()).only_in_testing(),
+            #[cfg(feature = "testing")]
+            maxage: lsa.hdr.is_maxage().then_some(()),
         })
     }
 }
@@ -1863,9 +1876,11 @@ impl<'a> YangContainer<'a, Instance<Ospfv3>> for ospf::areas::area::database::ar
     fn new(_instance: &'a Instance<Ospfv3>, lse: &Self::ParentListEntry) -> Option<Self> {
         let lsa = &lse.data;
         let lsa_body = lsa.body.as_router_info()?;
-        let iter = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).copied();
+        let iter = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).filter_map(|algo| PrefixSidAlgo::from_u8(*algo));
+        let iter_number = lsa_body.sr_algo.iter().flat_map(|tlv| tlv.get().iter()).copied();
         Some(Self {
             sr_algorithm: Some(Box::new(iter)),
+            sr_algorithm_number: Some(Box::new(iter_number)),
         })
     }
 }
@@ -2232,7 +2247,8 @@ impl<'a> YangList<'a, Instance<Ospfv3>>
 
     fn new(_instance: &'a Instance<Ospfv3>, stlv: &Self::ListEntry) -> Self {
         Self {
-            algorithm: Some(stlv.algo),
+            algorithm: PrefixSidAlgo::from_u8(stlv.algo),
+            algorithm_number: Some(stlv.algo),
             label_value: stlv.sid.as_label().map(|label| label.get()),
             index_value: stlv.sid.as_index().copied(),
         }
@@ -2526,7 +2542,8 @@ impl<'a> YangList<'a, Instance<Ospfv3>>
 
     fn new(_instance: &'a Instance<Ospfv3>, stlv: &Self::ListEntry) -> Self {
         Self {
-            algorithm: Some(stlv.algo),
+            algorithm: PrefixSidAlgo::from_u8(stlv.algo),
+            algorithm_number: Some(stlv.algo),
             label_value: stlv.sid.as_label().map(|label| label.get()),
             index_value: stlv.sid.as_index().copied(),
         }
@@ -2690,7 +2707,8 @@ impl<'a> YangContainer<'a, Instance<Ospfv2>> for ospf::areas::area::virtual_link
             seq_num: Some(lsa.hdr.seq_no).ignore_in_testing(),
             checksum: Some(FletcherChecksum16(lsa.hdr.cksum)).ignore_in_testing(),
             length: Some(lsa.hdr.length),
-            maxage: lsa.hdr.is_maxage().then_some(()).only_in_testing(),
+            #[cfg(feature = "testing")]
+            maxage: lsa.hdr.is_maxage().then_some(()),
         })
     }
 }
@@ -2814,7 +2832,8 @@ impl<'a> YangContainer<'a, Instance<Ospfv3>> for ospf::areas::area::virtual_link
             seq_num: Some(lsa.hdr.seq_no).ignore_in_testing(),
             checksum: Some(FletcherChecksum16(lsa.hdr.cksum)).ignore_in_testing(),
             length: Some(lsa.hdr.length),
-            maxage: lsa.hdr.is_maxage().then_some(()).only_in_testing(),
+            #[cfg(feature = "testing")]
+            maxage: lsa.hdr.is_maxage().then_some(()),
         })
     }
 }
@@ -3085,7 +3104,8 @@ impl<'a> YangContainer<'a, Instance<Ospfv2>> for ospf::areas::area::interfaces::
             seq_num: Some(lsa.hdr.seq_no).ignore_in_testing(),
             checksum: Some(FletcherChecksum16(lsa.hdr.cksum)).ignore_in_testing(),
             length: Some(lsa.hdr.length),
-            maxage: lsa.hdr.is_maxage().then_some(()).only_in_testing(),
+            #[cfg(feature = "testing")]
+            maxage: lsa.hdr.is_maxage().then_some(()),
         })
     }
 }
@@ -3225,7 +3245,8 @@ impl<'a> YangContainer<'a, Instance<Ospfv3>> for ospf::areas::area::interfaces::
             seq_num: Some(lsa.hdr.seq_no).ignore_in_testing(),
             checksum: Some(FletcherChecksum16(lsa.hdr.cksum)).ignore_in_testing(),
             length: Some(lsa.hdr.length),
-            maxage: lsa.hdr.is_maxage().then_some(()).only_in_testing(),
+            #[cfg(feature = "testing")]
+            maxage: lsa.hdr.is_maxage().then_some(()),
         })
     }
 }
@@ -3480,7 +3501,8 @@ impl<'a> YangList<'a, Instance<Ospfv3>>
 
     fn new(_instance: &'a Instance<Ospfv3>, stlv: &Self::ListEntry) -> Self {
         Self {
-            algorithm: Some(stlv.algo),
+            algorithm: PrefixSidAlgo::from_u8(stlv.algo),
+            algorithm_number: Some(stlv.algo),
             label_value: stlv.sid.as_label().map(|label| label.get()),
             index_value: stlv.sid.as_index().copied(),
         }

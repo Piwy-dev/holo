@@ -101,7 +101,7 @@ static IDENTITY_TYPES: &[(&str, TypeSpec)] = &[
     (
         "prefix-sid-algorithm",
         TypeSpec {
-            rust_type: "IgpAlgoType",
+            rust_type: "PrefixSidAlgo",
             copy_semantics: true,
         },
     ),
@@ -259,6 +259,8 @@ static LEAF_TYPES: &[(&str, TypeSpec)] = &[
 ];
 
 fn main() {
+    holo_platform::network_backend();
+
     let mut yang_ctx = yang::new_context();
     let modules = yang::implemented_modules::OSPF;
     yang::load_modules(&mut yang_ctx, modules);

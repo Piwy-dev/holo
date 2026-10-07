@@ -578,6 +578,26 @@ async fn pdu_ext_seqnum1() {
 }
 
 // Input:
+//  * Protocol: received a P2P Hello on eth-rt3-1 from 0000.0000.0003 listing
+//    the IPv6 unicast topology alone in the Multi-Topology TLV
+// Output:
+//  * Protocol: send an updated local LSP to all L2 adjacencies
+//  * Northbound:
+//    - update the topologies and addresses of the 0000.0000.0003 adjacency on
+//      eth-rt3-1
+//    - remove the MT #0 IS reachability to 0000.0000.0003 over eth-rt3-1 from
+//      the local LSP
+//    - add the local LSP to the SRM list of all L2 adjacencies
+//    - remove eth-rt3-1 from the IPv4 routes in the local RIB
+//    - transition the SPF Delay FSM state from "quiet" to "short-wait"
+//    - send an "lsp-generation" YANG notification
+//  * Ibus: reinstall the IPv4 routes through 0000.0000.0003 without eth-rt3-1
+#[tokio::test]
+async fn pdu_hello_topology1() {
+    run_test::<Instance>("pdu-hello-topology1", "topo2-4", "rt5").await;
+}
+
+// Input:
 //  * Northbound: disable the IPv4 address family for the instance
 // Output:
 //  * Protocol: send an updated local LSP to all adjacencies
@@ -900,6 +920,31 @@ async fn nb_config_iface_metric1() {
 #[tokio::test]
 async fn nb_config_iface_passive1() {
     run_test::<Instance>("nb-config-iface-passive1", "topo2-1", "rt6").await;
+}
+
+// Input:
+//  * Northbound: disable the standard topology on eth-rt5-1
+// Output:
+//  * Protocol: send an updated local LSP to all adjacencies
+//  * Northbound:
+//    - remove the eth-rt5-1 IPv4 address, the eth-rt5-1 IPv4 reachability and
+//      the MT #0 IS reachability to 0000.0000.0005 over eth-rt5-1 from the
+//      local LSP
+//    - add the local LSP to the SRM list of all adjacencies
+//    - transition the SPF Delay FSM state from "quiet" to "short-wait"
+//    - send an "lsp-generation" YANG notification
+//
+// Input:
+//  * Protocol: SPF_TIMER expiration for L2
+// Output:
+//  * Northbound:
+//    - remove eth-rt5-1 from the IPv4 routes in the local RIB
+//    - add a route to 10.0.4.0/24 through eth-rt5-2
+//  * Ibus: reinstall the IPv4 routes through 0000.0000.0005 using eth-rt5-2
+//    alone
+#[tokio::test]
+async fn nb_config_iface_topology1() {
+    run_test::<Instance>("nb-config-iface-topology1", "topo2-4", "rt3").await;
 }
 
 // Input:
@@ -1422,6 +1467,19 @@ async fn ibus_route_redist1() {
 #[tokio::test]
 async fn timeout_adj1() {
     run_test::<Instance>("timeout-adj1", "topo2-1", "rt6").await;
+}
+
+// Input:
+//  * Northbound: disable the standard topology
+// Output:
+//  * Protocol: send an updated local LSP to all adjacencies, listing the IPv6
+//    unicast topology alone in the Multi-Topology TLV, IPv6 alone in the
+//    Protocols Supported TLV, and carrying no MT #0 IS or IP reachability
+//  * Northbound: send an "lsp-generation" YANG notification
+//    (lsp-id = 0000.0000.0003.00-00)
+#[tokio::test]
+async fn nb_config_topology1() {
+    run_test::<Instance>("nb-config-topology1", "topo2-4", "rt3").await;
 }
 
 // Input:

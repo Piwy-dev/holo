@@ -164,7 +164,7 @@ impl Adjacency {
                 if iface.config.csnp_disable {
                     iface.csnp_send_single(instance);
                 } else {
-                    iface.csnp_interval_start(instance);
+                    iface.csnp_interval_start(instance, LevelType::All);
                 }
 
                 // Add all LSPs to the interface RXMT list.
@@ -173,7 +173,7 @@ impl Adjacency {
                 };
                 let _ = instance.tx.protocol_input.adj_init_lsdb_sync.send(msg);
             } else if self.state == AdjacencyState::Up {
-                iface.csnp_interval_stop();
+                iface.csnp_interval_stop(LevelType::All);
             }
         }
 
@@ -230,12 +230,20 @@ impl Adjacency {
         // Effectively transition to the new state.
         self.state = new_state;
 
-        // Schedule LSP reorigination for all levels where the adjacency exists.
-        //
-        // If this is an L2 adjacency in an L1/L2 router, the L1 LSP must also
-        // be reoriginated. This is necessary because the connection to the
-        // backbone may have changed (e.g., broken or become available), which
-        // affects the setting of the ATT bit in L1 LSPs.
+        // Schedule LSP reorigination.
+        self.schedule_lsp_origination(instance);
+    }
+
+    // Schedules LSP reorigination for all levels where the adjacency exists.
+    //
+    // If this is an L2 adjacency in an L1/L2 router, the L1 LSP must also be
+    // reoriginated. This is necessary because the connection to the backbone
+    // may have changed (e.g., broken or become available), which affects the
+    // setting of the ATT bit in L1 LSPs.
+    pub(crate) fn schedule_lsp_origination(
+        &self,
+        instance: &mut InstanceUpView<'_>,
+    ) {
         let mut level_type = self.level_usage;
         if level_type == LevelType::L2
             && instance.config.level_type == LevelType::All

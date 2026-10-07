@@ -14,8 +14,6 @@ generational-arena.workspace = true
 internet-checksum.workspace = true
 ipnetwork.workspace = true
 itertools.workspace = true
-libc.workspace = true
-nix.workspace = true
 num-derive.workspace = true
 num-traits.workspace = true
 phf.workspace = true
@@ -23,7 +21,6 @@ rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
-socket2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 yang5.workspace = true
@@ -33,23 +30,30 @@ holo-protocol = { path = "../holo-protocol" }
 holo-utils = { path = "../holo-utils" }
 holo-yang = { path = "../holo-yang" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+nix.workspace = true
+socket2.workspace = true
+
 [dev-dependencies]
 yang5 = { workspace = true, features = ["bundled"] }
 
 holo-igmp = { path = ".", features = ["testing", "deterministic"] }
-holo-northbound = { path = "../holo-northbound", features = ["testing"] }
-holo-protocol = { path = "../holo-protocol", features = ["testing"] }
-holo-utils = { path = "../holo-utils", features = ["testing"] }
 
 [build-dependencies]
 yang5 = { workspace = true, features = ["bundled"] }
 holo-northbound = { path = "../holo-northbound", features = ["igmp"] }
 holo-yang = { path = "../holo-yang" }
+holo-platform = { path = "../holo-platform" }
 
 [lints]
 workspace = true
 
 [features]
 default = []
-testing = []
+testing = [
+  "holo-northbound/testing",
+  "holo-protocol/testing",
+  "holo-utils/testing",
+]
 deterministic = []

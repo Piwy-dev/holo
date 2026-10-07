@@ -212,18 +212,6 @@ pub enum IgpMetricType {
     TeDefaultMetric = 2,
 }
 
-// IGP Algorithm Types.
-//
-// IANA registry:
-// https://www.iana.org/assignments/igp-parameters/igp-parameters.xhtml#igp-algorithm-types
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[derive(FromPrimitive)]
-#[derive(Deserialize, Serialize)]
-pub enum IgpAlgoType {
-    Spf = 0,
-    StrictSpf = 1,
-}
-
 // IGP Flexible Algorithm Definition Flags.
 //
 // IANA registry:
@@ -305,6 +293,12 @@ pub enum FloodingAlgo {
     ZeroPruner = 1,
     // FIXME: TBD1 in https://datatracker.ietf.org/doc/html/draft-ietf-lsr-distoptflood-11#section-4
     ModifiedManet = 2,
+}
+
+// ===== impl MtId =====
+
+impl MtId {
+    pub const ALL: [MtId; 2] = [MtId::Standard, MtId::Ipv6Unicast];
 }
 
 // ===== conversion functions =====

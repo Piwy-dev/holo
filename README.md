@@ -18,6 +18,9 @@ automation-driven networks.
 For a description of what a routing protocol is, please refer to this
 [Wikipedia page](https://en.wikipedia.org/wiki/Routing_protocol).
 
+You can try Holo in your browser, without installing anything, at
+[Holo Lab](https://holo-lab.pages.dev/).
+
 ## Features
 
 #### Focus on simplicity and correctness
@@ -117,21 +120,29 @@ For detailed instructions on installation, please refer to the
 
 #### Supported Platforms
 
-At present, Holo is only compatible with Linux operating systems.
-WebAssembly support is planned for the future.
+Holo runs on Linux. The codebase is largely platform independent, and
+the parts that interact with the operating system, such as network I/O,
+interface management and route installation, are isolated in a few
+places, so Holo can be ported to other platforms with little effort. It
+can also be compiled to WebAssembly, mainly to run virtual networks in
+the browser.
 
 #### Getting Started
 
-The easiest way to start using Holo is by using pre-built Docker containers
-in combination with the [containerlab](https://containerlab.dev/) software.
+The quickest way to try Holo is [Holo Lab](https://holo-lab.pages.dev/),
+which runs network topologies of Holo routers directly in the browser.
+
+For a complete setup, use pre-built Docker containers in combination with
+the [containerlab](https://containerlab.dev/) software.
 You can find a variety of pre-configured network topologies at [this
 link](https://github.com/holo-routing/containerlab-topologies).  These topologies
 can be deployed with a single command, allowing you to test Holo in various
 network setups, including interoperability testing with other implementations.
 
-Additionally, Holo can be used wherever a routing stack is required, such
-as in software routers, provided that the feature set aligns with your
-specific needs.
+Additionally, Holo can be integrated into any platform that requires a
+routing stack, including hardware routers, open source network operating
+systems and software routers, provided that the feature set aligns with
+your specific needs.
 
 ## Compliance
 
@@ -152,6 +163,7 @@ Holo supports the following Internet Standards:
 * RFC 2918 - Route Refresh Capability for BGP-4
 * RFC 4271 - A Border Gateway Protocol 4 (BGP-4)
 * RFC 4360 - BGP Extended Communities Attribute
+* RFC 4456 - BGP Route Reflection: An Alternative to Full Mesh Internal BGP (IBGP)
 * RFC 4486 - Subcodes for BGP Cease Notification Message
 * RFC 4760 - Multiprotocol Extensions for BGP-4
 * RFC 5082 - The Generalized TTL Security Mechanism (GTSM)
@@ -270,8 +282,8 @@ Results from conformance testing performed with the Ixia IxANVL RFC Compliance T
 | ietf-ip@2018-02-22 | 52.17% | 0.00% | - | - | [40.00%](https://holo-routing.github.io/ietf-yang-coverage/ietf-ip@2018-02-22.html) |
 | ietf-ipv4-unicast-routing@2018-03-13 | 100.00% | 100.00% | - | - | [100.00%](https://holo-routing.github.io/ietf-yang-coverage/ietf-ipv4-unicast-routing@2018-03-13.html) |
 | ietf-ipv6-unicast-routing@2018-03-13 | 40.62% | 100.00% | - | - | [45.71%](https://holo-routing.github.io/ietf-yang-coverage/ietf-ipv6-unicast-routing@2018-03-13.html) |
-| ietf-isis-flex-algo@2026-06-26 | 0.00% | 100.00% | - | 0.00% | [74.00%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis-flex-algo@2026-06-26.html) |
-| ietf-isis-link-attr@2026-06-26 | 81.82% | 78.43% | - | - | [78.76%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis-link-attr@2026-06-26.html) |
+| ietf-isis-flex-algo@2026-07-11 | 0.00% | 100.00% | - | 0.00% | [74.00%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis-flex-algo@2026-07-11.html) |
+| ietf-isis-link-attr@2026-07-11 | 38.46% | 78.43% | - | - | [73.91%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis-link-attr@2026-07-11.html) |
 | ietf-isis-msd@2024-09-02 | - | 100.00% | - | - | [100.00%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis-msd@2024-09-02.html) |
 | ietf-isis-sr-mpls@2025-12-09 | 15.38% | 57.27% | - | - | [52.85%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis-sr-mpls@2025-12-09.html) |
 | ietf-isis@2022-10-19 | 93.62% | 80.09% | 100.00% | 100.00% | [86.77%](https://holo-routing.github.io/ietf-yang-coverage/ietf-isis@2022-10-19.html) |

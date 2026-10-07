@@ -235,7 +235,9 @@ impl Instance {
 
     // Stops the IS-IS instance.
     fn stop(&mut self, reason: InstanceInactiveReason) {
-        let (mut instance, arenas) = self.as_up().unwrap();
+        let Some((mut instance, arenas)) = self.as_up() else {
+            return;
+        };
 
         Debug::InstanceStop(reason).log();
 
@@ -582,6 +584,9 @@ impl InstanceUpView<'_> {
         let mt_id = mt_id.into();
         interfaces
             .iter()
+            .filter(|iface| {
+                iface.config.topologies::<u16>(self.config).contains(&mt_id)
+            })
             .flat_map(|iface| iface.adjacencies(adjacencies))
             .filter(|adj| adj.topologies.contains(&mt_id))
             .filter(|adj| adj.state == AdjacencyState::Up)
